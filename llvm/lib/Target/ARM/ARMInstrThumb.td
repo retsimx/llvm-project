@@ -1303,8 +1303,8 @@ def tROR :                      // A8.6.139
 def tRSB :                      // A8.6.141
   T1sIDPEncode<0b1001, (outs tGPR:$Rd), (ins tGPR:$Rn),
                IIC_iALUi,
-               "rsb", "\t$Rd, $Rn, #0",
-               [(set tGPR:$Rd, (ineg tGPR:$Rn))]>, Sched<[WriteALU]>;
+               "tneg", "\t$Rd, $Rn",
+               [(set tGPR:$Rd, (ineg tGPR:$Rn))]>, Requires<[IsThumb, IsThumb1Only, HasV6]>, Sched<[WriteALU]>;
 
 // Subtract with carry register
 let Uses = [CPSR] in
@@ -1387,11 +1387,11 @@ let hasPostISelHook = 1, Defs = [CPSR] in {
                 Requires<[IsThumb1Only]>,
                 Sched<[WriteALU]>;
 
-  def tRSBS   : tPseudoInst<(outs tGPR:$Rd), (ins tGPR:$Rn),
-                            2, IIC_iALUr,
-                            [(set tGPR:$Rd, CPSR, (ARMsubc 0, tGPR:$Rn))]>,
-                Requires<[IsThumb1Only]>,
-                Sched<[WriteALU]>;
+//  def tRSBS   : tPseudoInst<(outs tGPR:$Rd), (ins tGPR:$Rn),
+//                            2, IIC_iALUr,
+//                            [(set tGPR:$Rd, CPSR, (ARMsubc 0, tGPR:$Rn))]>,
+//                Requires<[IsThumb1Only]>,
+//                Sched<[WriteALU]>;
 
   def tLSLSri : tPseudoInst<(outs tGPR:$Rd), (ins tGPR:$Rn, imm0_31:$imm5),
                             2, IIC_iALUr,
@@ -1424,6 +1424,7 @@ def tTST :                      // A8.6.230
   T1pIDPEncode<0b1000, (outs), (ins tGPR:$Rn, tGPR:$Rm), IIC_iTSTr,
                "tst", "\t$Rn, $Rm",
                [(set CPSR, (ARMcmpZ (and_su tGPR:$Rn, tGPR:$Rm), 0))]>,
+               Requires<[IsThumb, IsThumb1Only, HasV6]>,
                Sched<[WriteALU]>;
 
 // A8.8.247  UDF - Undefined (Encoding T1)
@@ -1477,7 +1478,7 @@ def : Pat<(ARMcmov tGPR:$false, tGPR:$true, imm:$cc, CPSR),
 
 def tADR : T1I<(outs tGPR:$Rd), (ins t_adrlabel:$addr, pred:$p),
                IIC_iALUi, "adr{$p}\t$Rd, $addr", []>,
-               T1Encoding<{1,0,1,0,0,?}>, Sched<[WriteALU]> {
+               T1Encoding<{1,0,1,0,0,?}>, Requires<[IsThumb, IsThumb1Only, HasV6]>, Sched<[WriteALU]> {
   bits<3> Rd;
   bits<8> addr;
   let Inst{10-8} = Rd;
@@ -1487,12 +1488,12 @@ def tADR : T1I<(outs tGPR:$Rd), (ins t_adrlabel:$addr, pred:$p),
 
 let hasSideEffects = 0, isReMaterializable = 1 in
 def tLEApcrel   : tPseudoInst<(outs tGPR:$Rd), (ins i32imm:$label, pred:$p),
-                              2, IIC_iALUi, []>, Sched<[WriteALU]>;
+                              2, IIC_iALUi, []>, Requires<[IsThumb, IsThumb1Only, HasV6]>, Sched<[WriteALU]>;
 
 let hasSideEffects = 1 in
 def tLEApcrelJT : tPseudoInst<(outs tGPR:$Rd),
                               (ins i32imm:$label, pred:$p),
-                              2, IIC_iALUi, []>, Sched<[WriteALU]>;
+                              2, IIC_iALUi, []>, Requires<[IsThumb, IsThumb1Only, HasV6]>, Sched<[WriteALU]>;
 
 // Thumb-1 doesn't have the TBB or TBH instructions, but we can synthesize them
 // and make use of the same compressed jump table format as Thumb-2.
@@ -1627,7 +1628,7 @@ def : Pat<(ARMWrapper tglobaltlsaddr:$addr),
 
 // JumpTable
 def : T1Pat<(ARMWrapperJT tjumptable:$dst),
-            (tLEApcrelJT tjumptable:$dst)>;
+            (tLEApcrelJT tjumptable:$dst)>, Requires<[IsThumb, IsThumb1Only, HasV6]>;
 
 // Direct calls
 def : T1Pat<(ARMcall texternalsym:$func), (tBL texternalsym:$func)>,

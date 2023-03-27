@@ -2459,7 +2459,7 @@ static const AddSubFlagsOpcodePair AddSubFlagsOpcodeMap[] = {
   {ARM::tSUBSi8, ARM::tSUBi8},
   {ARM::tSUBSrr, ARM::tSUBrr},
   {ARM::tSBCS, ARM::tSBC},
-  {ARM::tRSBS, ARM::tRSB},
+  {ARM::tRSB, ARM::tRSB},
   {ARM::tLSLSri, ARM::tLSLri},
 
   {ARM::t2ADDSri, ARM::t2ADDri},
