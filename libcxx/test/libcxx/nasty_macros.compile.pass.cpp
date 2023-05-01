@@ -9,8 +9,8 @@
 // Test that headers are not tripped up by the surrounding code defining various
 // alphabetic macros.
 
-// The system-provided <uchar.h> seems to be broken on AIX
-// XFAIL: LIBCXX-AIX-FIXME
+// FIXME: This should pass with the PSTL enabled
+// XFAIL: with-pstl
 
 // Prevent <ext/hash_map> from generating deprecated warnings for this test.
 #if defined(__DEPRECATED)

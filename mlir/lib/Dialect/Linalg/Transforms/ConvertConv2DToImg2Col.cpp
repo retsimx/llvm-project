@@ -50,12 +50,12 @@ static Value createMul(Location loc, Value x, Value y, Type accType,
 // Delinearizes the given composite `index` by the basis specified in `factors`.
 static SmallVector<Value> unrollIndex(OpBuilder &b, Location loc, Value index,
                                       ArrayRef<int64_t> factors) {
-  assert(factors.size() >= 1 && "empty factor list");
+  assert(!factors.empty() && "empty factor list");
   SmallVector<Value> basis;
   for (int64_t f : factors)
     basis.push_back(b.create<arith::ConstantOp>(loc, b.getIndexAttr(f)));
   FailureOr<SmallVector<Value>> multiIndex =
-      delinearizeIndex(b, loc, index, basis);
+      affine::delinearizeIndex(b, loc, index, basis);
   assert(!failed(multiIndex) && "Failed to linearize img2col index");
   return *multiIndex;
 }
@@ -68,7 +68,8 @@ static Value getConvolvedIndex(OpBuilder &b, Location loc, Value oIndex,
   AffineExpr oExpr, fExpr;
   bindSymbols(b.getContext(), oExpr, fExpr);
   AffineMap convMap = AffineMap::get(0, 2, stride * oExpr + fExpr);
-  return makeComposedAffineApply(b, loc, convMap, ValueRange{oIndex, fIndex});
+  return affine::makeComposedAffineApply(b, loc, convMap,
+                                         ValueRange{oIndex, fIndex});
 }
 
 FailureOr<std::pair<Operation *, Operation *>>

@@ -51,7 +51,14 @@ namespace placeholders
 
 template <int _Np> struct __ph {};
 
-#if defined(_LIBCPP_CXX03_LANG) || defined(_LIBCPP_BUILDING_LIBRARY)
+// C++17 recommends that we implement placeholders as `inline constexpr`, but allows
+// implementing them as `extern <implementation-defined>`. Libc++ implements them as
+// `extern const` in all standard modes to avoid an ABI break in C++03: making them
+// `inline constexpr` requires removing their definition in the shared library to
+// avoid ODR violations, which is an ABI break.
+//
+// In practice, since placeholders are empty, `extern const` is almost impossible
+// to distinguish from `inline constexpr` from a usage stand point.
 _LIBCPP_FUNC_VIS extern const __ph<1>   _1;
 _LIBCPP_FUNC_VIS extern const __ph<2>   _2;
 _LIBCPP_FUNC_VIS extern const __ph<3>   _3;
@@ -62,18 +69,6 @@ _LIBCPP_FUNC_VIS extern const __ph<7>   _7;
 _LIBCPP_FUNC_VIS extern const __ph<8>   _8;
 _LIBCPP_FUNC_VIS extern const __ph<9>   _9;
 _LIBCPP_FUNC_VIS extern const __ph<10> _10;
-#else
-/* inline */ constexpr __ph<1>   _1{};
-/* inline */ constexpr __ph<2>   _2{};
-/* inline */ constexpr __ph<3>   _3{};
-/* inline */ constexpr __ph<4>   _4{};
-/* inline */ constexpr __ph<5>   _5{};
-/* inline */ constexpr __ph<6>   _6{};
-/* inline */ constexpr __ph<7>   _7{};
-/* inline */ constexpr __ph<8>   _8{};
-/* inline */ constexpr __ph<9>   _9{};
-/* inline */ constexpr __ph<10> _10{};
-#endif // defined(_LIBCPP_CXX03_LANG) || defined(_LIBCPP_BUILDING_LIBRARY)
 
 } // namespace placeholders
 
@@ -263,11 +258,11 @@ __apply_functor(_Fp& __f, _BoundArgs& __bound_args, __tuple_indices<_Indx...>,
 }
 
 template<class _Fp, class ..._BoundArgs>
-class __bind : public __weak_result_type<typename decay<_Fp>::type>
+class __bind : public __weak_result_type<__decay_t<_Fp> >
 {
 protected:
-    typedef typename decay<_Fp>::type _Fd;
-    typedef tuple<typename decay<_BoundArgs>::type...> _Td;
+    using _Fd = __decay_t<_Fp>;
+    typedef tuple<__decay_t<_BoundArgs>...> _Td;
 private:
     _Fd __f_;
     _Td __bound_args_;

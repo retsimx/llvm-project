@@ -36,6 +36,16 @@
 namespace clang {
 namespace dataflow {
 
+const Environment *StmtToEnvMap::getEnvironment(const Stmt &S) const {
+  auto BlockIt = CFCtx.getStmtToBlock().find(&ignoreCFGOmittedNodes(S));
+  assert(BlockIt != CFCtx.getStmtToBlock().end());
+  if (!CFCtx.isBlockReachable(*BlockIt->getSecond()))
+    return nullptr;
+  const auto &State = BlockToState[BlockIt->getSecond()->getBlockID()];
+  assert(State);
+  return &State->Env;
+}
+
 static BoolValue &evaluateBooleanEquality(const Expr &LHS, const Expr &RHS,
                                           Environment &Env) {
   if (auto *LHSValue =
@@ -128,6 +138,8 @@ static Value *maybeUnpackLValueExpr(const Expr &E, Environment &Env) {
   Env.setValue(*Loc, UnpackedVal);
   return &UnpackedVal;
 }
+
+namespace {
 
 class TransferVisitor : public ConstStmtVisitor<TransferVisitor> {
 public:
@@ -225,7 +237,7 @@ public:
       Env.setStorageLocation(*S, *DeclLoc);
     } else {
       auto &Loc = Env.createStorageLocation(*S);
-      auto &Val = Env.takeOwnership(std::make_unique<ReferenceValue>(*DeclLoc));
+      auto &Val = Env.create<ReferenceValue>(*DeclLoc);
       Env.setStorageLocation(*S, Loc);
       Env.setValue(Loc, Val);
     }
@@ -264,8 +276,7 @@ public:
       // FIXME: reuse the ReferenceValue instead of creating a new one.
       if (auto *InitExprLoc =
               Env.getStorageLocation(*InitExpr, SkipPast::Reference)) {
-        auto &Val =
-            Env.takeOwnership(std::make_unique<ReferenceValue>(*InitExprLoc));
+        auto &Val = Env.create<ReferenceValue>(*InitExprLoc);
         Env.setValue(Loc, Val);
       }
     } else if (auto *InitExprVal = Env.getValue(*InitExpr, SkipPast::None)) {
@@ -392,6 +403,18 @@ public:
       Env.setValue(Loc, NullPointerVal);
       break;
     }
+    case CK_FunctionToPointerDecay: {
+      StorageLocation *PointeeLoc =
+          Env.getStorageLocation(*SubExpr, SkipPast::Reference);
+      if (PointeeLoc == nullptr)
+        break;
+
+      auto &PointerLoc = Env.createStorageLocation(*S);
+      auto &PointerVal = Env.create<PointerValue>(*PointeeLoc);
+      Env.setStorageLocation(*S, PointerLoc);
+      Env.setValue(PointerLoc, PointerVal);
+      break;
+    }
     default:
       break;
     }
@@ -411,8 +434,8 @@ public:
 
       auto &Loc = Env.createStorageLocation(*S);
       Env.setStorageLocation(*S, Loc);
-      Env.setValue(Loc, Env.takeOwnership(std::make_unique<ReferenceValue>(
-                            SubExprVal->getPointeeLoc())));
+      Env.setValue(Loc,
+                   Env.create<ReferenceValue>(SubExprVal->getPointeeLoc()));
       break;
     }
     case UO_AddrOf: {
@@ -425,8 +448,7 @@ public:
         break;
 
       auto &PointerLoc = Env.createStorageLocation(*S);
-      auto &PointerVal =
-          Env.takeOwnership(std::make_unique<PointerValue>(*PointeeLoc));
+      auto &PointerVal = Env.create<PointerValue>(*PointeeLoc);
       Env.setStorageLocation(*S, PointerLoc);
       Env.setValue(PointerLoc, PointerVal);
       break;
@@ -456,8 +478,21 @@ public:
 
     auto &Loc = Env.createStorageLocation(*S);
     Env.setStorageLocation(*S, Loc);
-    Env.setValue(Loc, Env.takeOwnership(
-                          std::make_unique<PointerValue>(*ThisPointeeLoc)));
+    Env.setValue(Loc, Env.create<PointerValue>(*ThisPointeeLoc));
+  }
+
+  void VisitCXXNewExpr(const CXXNewExpr *S) {
+    auto &Loc = Env.createStorageLocation(*S);
+    Env.setStorageLocation(*S, Loc);
+    if (Value *Val = Env.createValue(S->getType()))
+      Env.setValue(Loc, *Val);
+  }
+
+  void VisitCXXDeleteExpr(const CXXDeleteExpr *S) {
+    // Empty method.
+    // We consciously don't do anything on deletes.  Diagnosing double deletes
+    // (for example) should be done by a specific analysis, not by the
+    // framework.
   }
 
   void VisitReturnStmt(const ReturnStmt *S) {
@@ -511,8 +546,7 @@ public:
         } else {
           auto &Loc = Env.createStorageLocation(*S);
           Env.setStorageLocation(*S, Loc);
-          Env.setValue(Loc, Env.takeOwnership(
-                                std::make_unique<ReferenceValue>(*VarDeclLoc)));
+          Env.setValue(Loc, Env.create<ReferenceValue>(*VarDeclLoc));
         }
         return;
       }
@@ -546,8 +580,7 @@ public:
     } else {
       auto &Loc = Env.createStorageLocation(*S);
       Env.setStorageLocation(*S, Loc);
-      Env.setValue(
-          Loc, Env.takeOwnership(std::make_unique<ReferenceValue>(MemberLoc)));
+      Env.setValue(Loc, Env.create<ReferenceValue>(MemberLoc));
     }
   }
 
@@ -613,9 +646,12 @@ public:
       assert(Arg1 != nullptr);
 
       // Evaluate only copy and move assignment operators.
-      auto *Arg0Type = Arg0->getType()->getUnqualifiedDesugaredType();
-      auto *Arg1Type = Arg1->getType()->getUnqualifiedDesugaredType();
-      if (Arg0Type != Arg1Type)
+      const auto *Method =
+          dyn_cast_or_null<CXXMethodDecl>(S->getDirectCallee());
+      if (!Method)
+        return;
+      if (!Method->isCopyAssignmentOperator() &&
+          !Method->isMoveAssignmentOperator())
         return;
 
       auto *ObjectLoc = Env.getStorageLocation(*Arg0, SkipPast::Reference);
@@ -873,6 +909,8 @@ private:
   const StmtToEnvMap &StmtToEnv;
   Environment &Env;
 };
+
+} // namespace
 
 void transfer(const StmtToEnvMap &StmtToEnv, const Stmt &S, Environment &Env) {
   TransferVisitor(StmtToEnv, Env).Visit(&S);

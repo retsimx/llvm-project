@@ -47,7 +47,7 @@ enum NodeType : unsigned {
   CALLnr,      // Function call that does not return.
   CALLR,
 
-  RET_FLAG,    // Return with a flag operand.
+  RET_GLUE,    // Return with a glue operand.
   BARRIER,     // Memory barrier.
   JT,          // Jump table.
   CP,          // Constant pool.
@@ -200,7 +200,7 @@ public:
   SDValue LowerStore(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerUnalignedLoad(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerUAddSubO(SDValue Op, SelectionDAG &DAG) const;
-  SDValue LowerAddSubCarry(SDValue Op, SelectionDAG &DAG) const;
+  SDValue LowerUAddSubOCarry(SDValue Op, SelectionDAG &DAG) const;
 
   SDValue LowerDYNAMIC_STACKALLOC(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerINLINEASM(SDValue Op, SelectionDAG &DAG) const;
@@ -223,13 +223,13 @@ public:
   SDValue LowerToTLSLocalExecModel(GlobalAddressSDNode *GA,
       SelectionDAG &DAG) const;
   SDValue GetDynamicTLSAddr(SelectionDAG &DAG, SDValue Chain,
-      GlobalAddressSDNode *GA, SDValue InFlag, EVT PtrVT,
-      unsigned ReturnReg, unsigned char OperandFlags) const;
+      GlobalAddressSDNode *GA, SDValue InGlue, EVT PtrVT,
+      unsigned ReturnReg, unsigned char OperandGlues) const;
   SDValue LowerGLOBAL_OFFSET_TABLE(SDValue Op, SelectionDAG &DAG) const;
 
   SDValue LowerCall(TargetLowering::CallLoweringInfo &CLI,
       SmallVectorImpl<SDValue> &InVals) const override;
-  SDValue LowerCallResult(SDValue Chain, SDValue InFlag,
+  SDValue LowerCallResult(SDValue Chain, SDValue InGlue,
                           CallingConv::ID CallConv, bool isVarArg,
                           const SmallVectorImpl<ISD::InputArg> &Ins,
                           const SDLoc &dl, SelectionDAG &DAG,
