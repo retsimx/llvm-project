@@ -908,7 +908,8 @@ Error MachOPlatform::MachOPlatformPlugin::preserveImportantSections(
   // address in the first graph that it appears in, then verify and discard it
   // in all subsequent graphs. In this pass we preserve unconditionally -- we'll
   // manually throw it away in the processObjCImageInfo pass.
-  if (auto *ObjCImageInfoSec = G.findSectionByName("__DATA,__objc_imageinfo")) {
+  if (auto *ObjCImageInfoSec =
+          G.findSectionByName(MachOObjCImageInfoSectionName)) {
     if (ObjCImageInfoSec->blocks_size() != 1)
       return make_error<StringError>(
           "In " + G.getName() +
@@ -916,6 +917,13 @@ Error MachOPlatform::MachOPlatformPlugin::preserveImportantSections(
           inconvertibleErrorCode());
     G.addAnonymousSymbol(**ObjCImageInfoSec->blocks().begin(), 0, 0, false,
                          true);
+
+    for (auto *B : ObjCImageInfoSec->blocks())
+      if (!B->edges_empty())
+        return make_error<StringError>("In " + G.getName() + ", " +
+                                           MachOObjCImageInfoSectionName +
+                                           " contains references to symbols",
+                                       inconvertibleErrorCode());
   }
 
   // Init sections are important: We need to preserve them and so that their
@@ -923,6 +931,11 @@ Error MachOPlatform::MachOPlatformPlugin::preserveImportantSections(
   // registerObjectPlatformSections.
   JITLinkSymbolSet InitSectionSymbols;
   for (auto &InitSectionName : MachOInitSectionNames) {
+    // Skip ObjCImageInfo -- this shouldn't have any dependencies, and we may
+    // remove it later.
+    if (InitSectionName == MachOObjCImageInfoSectionName)
+      continue;
+
     // Skip non-init sections.
     auto *InitSection = G.findSectionByName(InitSectionName);
     if (!InitSection)
@@ -1357,7 +1370,7 @@ Error MachOPlatform::MachOPlatformPlugin::populateObjCRuntimeObject(
     DataSections.push_back({});
     auto &SD = DataSections.back();
     memset(&SD.Sec, 0, sizeof(SD.Sec));
-    strcpy(SD.Sec.sectname, "__objc_imageinfo");
+    memcpy(SD.Sec.sectname, "__objc_imageinfo", 16);
     strcpy(SD.Sec.segname, "__DATA");
     SD.Sec.size = 8;
     SD.AddFixups = [&](size_t RecordOffset) {

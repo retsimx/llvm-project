@@ -868,8 +868,7 @@ unsigned llvm::getDebugMetadataVersionFromModule(const Module &M) {
   return 0;
 }
 
-void Instruction::applyMergedLocation(const DILocation *LocA,
-                                      const DILocation *LocB) {
+void Instruction::applyMergedLocation(DILocation *LocA, DILocation *LocB) {
   setDebugLoc(DILocation::getMergedLocation(LocA, LocB));
 }
 
@@ -1488,7 +1487,7 @@ uint16_t LLVMGetDINodeTag(LLVMMetadataRef MD) {
 }
 
 const char *LLVMDITypeGetName(LLVMMetadataRef DType, size_t *Length) {
-  StringRef Str = unwrap<DIType>(DType)->getName();
+  StringRef Str = unwrapDI<DIType>(DType)->getName();
   *Length = Str.size();
   return Str.data();
 }
@@ -1916,7 +1915,8 @@ bool at::calculateFragmentIntersect(
 }
 
 /// Collect constant properies (base, size, offset) of \p StoreDest.
-/// Return std::nullopt if any properties are not constants.
+/// Return std::nullopt if any properties are not constants or the
+/// offset from the base pointer is negative.
 static std::optional<AssignmentInfo>
 getAssignmentInfoImpl(const DataLayout &DL, const Value *StoreDest,
                       TypeSize SizeInBits) {
@@ -1925,6 +1925,10 @@ getAssignmentInfoImpl(const DataLayout &DL, const Value *StoreDest,
   APInt GEPOffset(DL.getIndexTypeSizeInBits(StoreDest->getType()), 0);
   const Value *Base = StoreDest->stripAndAccumulateConstantOffsets(
       DL, GEPOffset, /*AllowNonInbounds*/ true);
+
+  if (GEPOffset.isNegative())
+    return std::nullopt;
+
   uint64_t OffsetInBytes = GEPOffset.getLimitedValue();
   // Check for overflow.
   if (OffsetInBytes == UINT64_MAX)
@@ -2104,6 +2108,7 @@ bool AssignmentTrackingPass::runOnFunction(Function &F) {
     return /*Changed*/ false;
 
   bool Changed = false;
+  auto *DL = &F.getParent()->getDataLayout();
   // Collect a map of {backing storage : dbg.declares} (currently "backing
   // storage" is limited to Allocas). We'll use this to find dbg.declares to
   // delete after running `trackAssignments`.
@@ -2128,13 +2133,15 @@ bool AssignmentTrackingPass::runOnFunction(Function &F) {
         // FIXME: Skip VLAs for now (let these variables use dbg.declares).
         if (!Alloca->isStaticAlloca())
           continue;
+        // Similarly, skip scalable vectors (use dbg.declares instead).
+        if (auto Sz = Alloca->getAllocationSize(*DL); Sz && Sz->isScalable())
+          continue;
         DbgDeclares[Alloca].insert(DDI);
         Vars[Alloca].insert(VarRecord(DDI));
       }
     }
   }
 
-  auto DL = std::make_unique<DataLayout>(F.getParent());
   // FIXME: Locals can be backed by caller allocas (sret, byval).
   // Note: trackAssignments doesn't respect dbg.declare's IR positions (as it
   // doesn't "understand" dbg.declares). However, this doesn't appear to break

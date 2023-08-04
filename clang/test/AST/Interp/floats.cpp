@@ -1,6 +1,15 @@
 // RUN: %clang_cc1 -fexperimental-new-constant-interpreter -verify %s
 // RUN: %clang_cc1 -verify=ref %s
 
+
+constexpr void assert(bool C) {
+  if (C)
+    return;
+  // Invalid in constexpr.
+  (void)(1 / 0); // expected-warning {{undefined}} \
+                 // ref-warning {{undefined}}
+}
+
 constexpr int i = 2;
 constexpr float f = 1.0f;
 static_assert(f == 1.0f, "");
@@ -77,7 +86,47 @@ namespace compound {
     return f;
   }
   static_assert(f2() == __FLT_MAX__, "");
+
+  constexpr float ff() {
+    float a[] = {1,2};
+    int i = 0;
+
+    // RHS should be evaluated before LHS, so this should
+    // write to a[1];
+    a[i++] += ++i;
+#if __cplusplus <= 201402L
+                  // expected-warning@-2 {{multiple unsequenced modifications}} \
+                  // ref-warning@-2 {{multiple unsequenced modifications}}
+#endif
+
+    return a[1];
+  }
+  static_assert(ff() == 3, "");
 }
+
+namespace unary {
+  constexpr float a() {
+    float f = 0.0;
+    assert(++f == 1.0);
+    assert(f == 1.0);
+    ++f;
+    f++;
+    assert(f == 3.0);
+    --f;
+    f--;
+    assert(f == 1.0);
+    return 1.0;
+  }
+  static_assert(a() == 1.0, "");
+
+  constexpr float b() {
+    float f = __FLT_MAX__;
+    f++;
+    return f;
+  }
+  static_assert(b() == __FLT_MAX__, "");
+}
+
 
 namespace ZeroInit {
   template<typename FloatT>
@@ -92,3 +141,16 @@ namespace ZeroInit {
   constexpr A<double> b{12};
   static_assert(a.f == 0.0, "");
 };
+
+namespace LongDouble {
+  constexpr long double ld = 3.1425926539;
+}
+
+namespace Compare {
+  constexpr float nan = __builtin_nan("");
+  constexpr float inf = __builtin_inf();
+  static_assert(!(nan == nan), "");
+  static_assert(nan != nan, "");
+  static_assert(!(inf < nan), "");
+  static_assert(!(inf > nan), "");
+}

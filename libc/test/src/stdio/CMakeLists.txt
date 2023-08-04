@@ -114,6 +114,7 @@ add_libc_unittest(
 
 add_fp_unittest(
   sprintf_test
+  UNIT_TEST_ONLY
   SUITE
     libc_stdio_unittests
   SRCS
@@ -134,23 +135,22 @@ add_libc_unittest(
     libc.src.stdio.snprintf
 )
 
-# In fullbuild mode, fprintf's tests use the internal FILE for other functions.
-if(LLVM_LIBC_FULL_BUILD)
-add_libc_unittest(
-  fprintf_test
-  SUITE
-    libc_stdio_unittests
-  SRCS
-    fprintf_test.cpp
-  DEPENDS
-    libc.src.stdio.fprintf
-    libc.src.stdio.fclose
-    libc.src.stdio.ferror
-    libc.src.stdio.fopen
-    libc.src.stdio.fread
+list(APPEND fprintf_test_deps
+      libc.src.stdio.fprintf
 )
+if(LLVM_LIBC_FULL_BUILD)
+# In fullbuild mode, fprintf's tests use the internal FILE for other functions.
+ list(APPEND fprintf_test_deps
+      libc.src.stdio.fclose
+      libc.src.stdio.ferror
+      libc.src.stdio.fopen
+      libc.src.stdio.fread
+  )
 else()
 # Else in overlay mode they use the system's FILE.
+ set(fprintf_test_copts "-DLIBC_COPT_PRINTF_USE_SYSTEM_FILE")
+endif()
+
 add_libc_unittest(
   fprintf_test
   SUITE
@@ -158,11 +158,10 @@ add_libc_unittest(
   SRCS
     fprintf_test.cpp
   DEPENDS
-    libc.src.stdio.fprintf
+    ${fprintf_test_deps}
   COMPILE_OPTIONS
-    -DLIBC_COPT_PRINTF_USE_SYSTEM_FILE
+    ${fprintf_test_copts}
 )
-endif()
 
 add_libc_unittest(
   printf_test
@@ -201,7 +200,7 @@ add_libc_unittest(
     LibcFPTestHelpers
 )
 
-add_libc_unittest(
+add_libc_test(
   puts_test
   SUITE
     libc_stdio_unittests
@@ -209,6 +208,29 @@ add_libc_unittest(
     puts_test.cpp
   DEPENDS
     libc.src.stdio.puts
+)
+
+add_libc_test(
+  fputs_test
+  SUITE
+    libc_stdio_unittests
+  SRCS
+    fputs_test.cpp
+  DEPENDS
+    libc.src.stdio.fputs
+)
+
+add_libc_test(
+  fopen_test
+  SUITE
+    libc_stdio_unittests
+  SRCS
+    fopen_test.cpp
+  DEPENDS
+    libc.src.stdio.fread
+    libc.src.stdio.fputs
+    libc.src.stdio.fclose
+    libc.src.stdio.fopen
 )
 
 add_libc_unittest(
@@ -317,6 +339,13 @@ add_libc_unittest(
     libc.src.stdio.fwrite
     libc.src.stdio.setvbuf
 )
+
+# Create an output directory for any temporary test files.
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/testdata)
+
+if(LIBC_TARGET_ARCHITECTURE_IS_GPU)
+  return()
+endif()
 
 add_subdirectory(printf_core)
 add_subdirectory(scanf_core)

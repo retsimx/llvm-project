@@ -639,7 +639,7 @@ static void darwinPrintStab(MachOObjectFile *MachO, const NMSymbol &S) {
 
 static std::optional<std::string> demangle(StringRef Name) {
   std::string Demangled;
-  if (nonMicrosoftDemangle(Name.str().c_str(), Demangled))
+  if (nonMicrosoftDemangle(Name, Demangled))
     return Demangled;
   return std::nullopt;
 }
@@ -1802,9 +1802,12 @@ static bool getSymbolNamesFromObject(SymbolicFile &Obj,
       // are used to repesent mapping symbols and needed to honor the
       // --special-syms option.
       auto *ELFObj = dyn_cast<ELFObjectFileBase>(&Obj);
-      if ((!ELFObj || (ELFObj->getEMachine() != ELF::EM_ARM &&
-                       ELFObj->getEMachine() != ELF::EM_AARCH64)) &&
-          !DebugSyms && (*SymFlagsOrErr & SymbolRef::SF_FormatSpecific))
+      bool HasMappingSymbol =
+          ELFObj && llvm::is_contained({ELF::EM_ARM, ELF::EM_AARCH64,
+                                        ELF::EM_CSKY, ELF::EM_RISCV},
+                                       ELFObj->getEMachine());
+      if (!HasMappingSymbol && !DebugSyms &&
+          (*SymFlagsOrErr & SymbolRef::SF_FormatSpecific))
         continue;
       if (WithoutAliases && (*SymFlagsOrErr & SymbolRef::SF_Indirect))
         continue;
@@ -2267,11 +2270,7 @@ static std::vector<NMSymbol> dumpSymbolNamesFromFile(StringRef Filename) {
   if (error(BufferOrErr.getError(), Filename))
     return SymbolList;
 
-  // Always enable opaque pointers, to handle archives with mixed typed and
-  // opaque pointer bitcode files gracefully. As we're only reading symbols,
-  // the used pointer types don't matter.
   LLVMContext Context;
-  Context.setOpaquePointers(true);
   LLVMContext *ContextPtr = NoLLVMBitcode ? nullptr : &Context;
   Expected<std::unique_ptr<Binary>> BinaryOrErr =
       createBinary(BufferOrErr.get()->getMemBufferRef(), ContextPtr);

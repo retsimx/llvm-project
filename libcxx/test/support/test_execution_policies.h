@@ -10,6 +10,7 @@
 #define TEST_SUPPORT_TEST_EXECUTION_POLICIES
 
 #include <cstdlib>
+#include <exception>
 #include <execution>
 #include <type_traits>
 #include <utility>
@@ -57,6 +58,8 @@ struct Bool {
   }
 };
 
+#ifndef TEST_HAS_NO_EXCEPTIONS
 [[noreturn]] inline void terminate_successful() { std::exit(0); }
+#endif
 
 #endif // TEST_SUPPORT_TEST_EXECUTION_POLICIES

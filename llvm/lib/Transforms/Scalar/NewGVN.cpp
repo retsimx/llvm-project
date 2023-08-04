@@ -1274,10 +1274,17 @@ const UnknownExpression *NewGVN::createUnknownExpression(Instruction *I) const {
 const CallExpression *
 NewGVN::createCallExpression(CallInst *CI, const MemoryAccess *MA) const {
   // FIXME: Add operand bundles for calls.
-  // FIXME: Allow commutative matching for intrinsics.
   auto *E =
       new (ExpressionAllocator) CallExpression(CI->getNumOperands(), CI, MA);
   setBasicExpressionInfo(CI, E);
+  if (CI->isCommutative()) {
+    // Ensure that commutative intrinsics that only differ by a permutation
+    // of their operands get the same value number by sorting the operand value
+    // numbers.
+    assert(CI->getNumOperands() >= 2 && "Unsupported commutative intrinsic!");
+    if (shouldSwapOperands(E->getOperand(0), E->getOperand(1)))
+      E->swapOperands(0, 1);
+  }
   return E;
 }
 
@@ -1611,6 +1618,12 @@ NewGVN::ExprResult NewGVN::performSymbolicCallEvaluation(Instruction *I) const {
   // optimizations. Revert this one when we detect the memory
   // accessing kind more precisely.
   if (CI->getFunction()->isPresplitCoroutine())
+    return ExprResult::none();
+
+  // Do not combine convergent calls since they implicitly depend on the set of
+  // threads that is currently executing, and they might be in different basic
+  // blocks.
+  if (CI->isConvergent())
     return ExprResult::none();
 
   if (AA->doesNotAccessMemory(CI)) {
@@ -1988,6 +2001,7 @@ NewGVN::performSymbolicEvaluation(Value *V,
       break;
     case Instruction::BitCast:
     case Instruction::AddrSpaceCast:
+    case Instruction::Freeze:
       return createExpression(I);
       break;
     case Instruction::ICmp:
@@ -2610,14 +2624,42 @@ bool NewGVN::OpIsSafeForPHIOfOps(Value *V, const BasicBlock *PHIBlock,
     }
 
     auto *OrigI = cast<Instruction>(I);
-    // When we hit an instruction that reads memory (load, call, etc), we must
-    // consider any store that may happen in the loop. For now, we assume the
-    // worst: there is a store in the loop that alias with this read.
-    // The case where the load is outside the loop is already covered by the
-    // dominator check above.
-    // TODO: relax this condition
-    if (OrigI->mayReadFromMemory())
-      return false;
+    
+    if (MemoryAccess *OriginalAccess = getMemoryAccess(OrigI)) {
+      SmallVector<MemoryAccess *, 4> MemAccessWorkList;
+      MemAccessWorkList.push_back(
+          MSSAWalker->getClobberingMemoryAccess(OriginalAccess));
+
+      // We only want memory defs/phis that might alias with the original
+      // access, so if we can, pass the location to the walker.
+      MemoryLocation Loc =
+          MemoryLocation::getOrNone(OrigI).value_or(MemoryLocation());
+      while (!MemAccessWorkList.empty()) {
+        auto *MemAccess = MemAccessWorkList.pop_back_val();
+        if (MSSA->isLiveOnEntryDef(MemAccess))
+          continue;
+
+        // Phi block is dominated - safe.
+        if (DT->properlyDominates(MemAccess->getBlock(), PHIBlock)) {
+          OpSafeForPHIOfOps.insert({I, true});
+          continue;
+        }
+
+        // Clobbering MemoryPhi - unsafe.
+        // Note : Only checking memory phis allows us to skip redundant stores
+        if (isa<MemoryPhi>(MemAccess) &&
+            MemAccess ==
+                MSSAWalker->getClobberingMemoryAccess(MemAccess, Loc)) {
+          OpSafeForPHIOfOps.insert({I, false});
+          return false;
+        }
+
+        // Add potential clobber of the original access.
+        MemAccessWorkList.push_back(MSSAWalker->getClobberingMemoryAccess(
+            cast<MemoryUseOrDef>(MemAccess)));
+        continue;
+      }
+    }
 
     // Check the operands of the current instruction.
     for (auto *Op : OrigI->operand_values()) {
@@ -2735,10 +2777,10 @@ NewGVN::makePossiblePHIOfOps(Instruction *I,
       return nullptr;
     }
     // No point in doing this for one-operand phis.
-    if (OpPHI->getNumOperands() == 1) {
-      OpPHI = nullptr;
-      continue;
-    }
+    // Since all PHIs for operands must be in the same block, then they must
+    // have the same number of operands so we can just abort.
+    if (OpPHI->getNumOperands() == 1)
+      return nullptr;
   }
 
   if (!OpPHI)
@@ -3708,9 +3750,10 @@ void NewGVN::deleteInstructionsInBlock(BasicBlock *BB) {
   }
   // Now insert something that simplifycfg will turn into an unreachable.
   Type *Int8Ty = Type::getInt8Ty(BB->getContext());
-  new StoreInst(PoisonValue::get(Int8Ty),
-                Constant::getNullValue(Int8Ty->getPointerTo()),
-                BB->getTerminator());
+  new StoreInst(
+      PoisonValue::get(Int8Ty),
+      Constant::getNullValue(PointerType::getUnqual(BB->getContext())),
+      BB->getTerminator());
 }
 
 void NewGVN::markInstructionForDeletion(Instruction *I) {

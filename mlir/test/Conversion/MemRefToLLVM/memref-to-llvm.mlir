@@ -446,8 +446,7 @@ func.func @memref_copy_ranked() {
   // CHECK: [[EXTRACT2P:%.*]] = llvm.extractvalue {{%.*}}[1] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
   // CHECK: [[EXTRACT2O:%.*]] = llvm.extractvalue {{%.*}}[2] : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)>
   // CHECK: [[GEP2:%.*]] = llvm.getelementptr [[EXTRACT2P]][[[EXTRACT2O]]] : (!llvm.ptr, i64) -> !llvm.ptr, f32
-  // CHECK: [[VOLATILE:%.*]] = llvm.mlir.constant(false) : i1
-  // CHECK: "llvm.intr.memcpy"([[GEP2]], [[GEP1]], [[SIZE]], [[VOLATILE]]) : (!llvm.ptr, !llvm.ptr, i64, i1) -> ()
+  // CHECK: "llvm.intr.memcpy"([[GEP2]], [[GEP1]], [[SIZE]]) <{isVolatile = false}>
   return
 }
 
@@ -455,15 +454,15 @@ func.func @memref_copy_ranked() {
 // -----
 
 // CHECK-LABEL: func @memref_copy_contiguous
-func.func @memref_copy_contiguous(%in: memref<16x2xi32>, %offset: index) {
+func.func @memref_copy_contiguous(%in: memref<16x4xi32>, %offset: index) {
   %buf = memref.alloc() : memref<1x2xi32>
-  %sub = memref.subview %in[%offset, 0] [1, 2] [1, 1] : memref<16x2xi32> to memref<1x2xi32, strided<[2, 1], offset: ?>>
-  memref.copy %sub, %buf : memref<1x2xi32, strided<[2, 1], offset: ?>> to memref<1x2xi32>
+  %sub = memref.subview %in[%offset, 0] [1, 2] [1, 1] : memref<16x4xi32> to memref<1x2xi32, strided<[4, 1], offset: ?>>
+  memref.copy %sub, %buf : memref<1x2xi32, strided<[4, 1], offset: ?>> to memref<1x2xi32>
   // Skip the memref descriptor of the alloc.
   // CHECK: llvm.insertvalue {{%.*}}, {{%.*}}[4, 1]
   // Get the memref for the subview.
-  // CHECK: %[[SUBVIEW:.*]] = memref.subview %{{.*}}[%{{.*}}, 0] [1, 2] [1, 1] : memref<16x2xi32> to memref<1x2xi32, strided<[2, 1], offset: ?>>
-  // CHECK: %[[DESC:.*]] = builtin.unrealized_conversion_cast %[[SUBVIEW]] : memref<1x2xi32, strided<[2, 1], offset: ?>> to !llvm.struct<(ptr
+  // CHECK: %[[SUBVIEW:.*]] = memref.subview %{{.*}}[%{{.*}}, 0] [1, 2] [1, 1] : memref<16x4xi32> to memref<1x2xi32, strided<[4, 1], offset: ?>>
+  // CHECK: %[[DESC:.*]] = builtin.unrealized_conversion_cast %[[SUBVIEW]] : memref<1x2xi32, strided<[4, 1], offset: ?>> to !llvm.struct<(ptr
   // CHECK: [[EXTRACT0:%.*]] = llvm.extractvalue %[[DESC]][3, 0] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
   // CHECK: [[MUL1:%.*]] = llvm.mul {{.*}}, [[EXTRACT0]] : i64
   // CHECK: [[EXTRACT1:%.*]] = llvm.extractvalue %[[DESC]][3, 1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
@@ -478,8 +477,7 @@ func.func @memref_copy_contiguous(%in: memref<16x2xi32>, %offset: index) {
   // CHECK: [[EXTRACT2P:%.*]] = llvm.extractvalue {{%.*}}[1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
   // CHECK: [[EXTRACT2O:%.*]] = llvm.extractvalue {{%.*}}[2] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
   // CHECK: [[GEP2:%.*]] = llvm.getelementptr [[EXTRACT2P]][[[EXTRACT2O]]] : (!llvm.ptr, i64) -> !llvm.ptr, i32
-  // CHECK: [[VOLATILE:%.*]] = llvm.mlir.constant(false) : i1
-  // CHECK: "llvm.intr.memcpy"([[GEP2]], [[GEP1]], [[SIZE]], [[VOLATILE]]) : (!llvm.ptr, !llvm.ptr, i64, i1) -> ()
+  // CHECK: "llvm.intr.memcpy"([[GEP2]], [[GEP1]], [[SIZE]]) <{isVolatile = false}>
   return
 }
 

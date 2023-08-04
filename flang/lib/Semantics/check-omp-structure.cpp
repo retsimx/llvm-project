@@ -190,8 +190,32 @@ void OmpStructureChecker::CheckMultListItems() {
   for (auto itr = alignedClauses.first; itr != alignedClauses.second; ++itr) {
     const auto &alignedClause{
         std::get<parser::OmpClause::Aligned>(itr->second->u)};
-    const auto &alignedNameList{
-        std::get<std::list<parser::Name>>(alignedClause.v.t)};
+    const auto &alignedList{std::get<0>(alignedClause.v.t)};
+    std::list<parser::Name> alignedNameList;
+    for (const auto &ompObject : alignedList.v) {
+      if (const auto *name{parser::Unwrap<parser::Name>(ompObject)}) {
+        if (name->symbol) {
+          if (FindCommonBlockContaining(*(name->symbol))) {
+            context_.Say(itr->second->source,
+                "'%s' is a common block name and can not appear in an "
+                "ALIGNED clause"_err_en_US,
+                name->ToString());
+          } else if (!(IsBuiltinCPtr(*(name->symbol)) ||
+                         IsAllocatableOrPointer(
+                             (name->symbol->GetUltimate())))) {
+            context_.Say(itr->second->source,
+                "'%s' in ALIGNED clause must be of type C_PTR, POINTER or "
+                "ALLOCATABLE"_err_en_US,
+                name->ToString());
+          } else {
+            alignedNameList.push_back(*name);
+          }
+        } else {
+          // The symbol is null, return early
+          return;
+        }
+      }
+    }
     checkMultipleOcurrence(alignedNameList, itr->second->source, "ALIGNED");
   }
 
@@ -287,11 +311,12 @@ void OmpStructureChecker::CheckPredefinedAllocatorRestriction(
         (IsSaved(*symbol) || commonBlock ||
             containingScope.kind() == Scope::Kind::Module)) {
       context_.Say(source,
-          "If list items within the ALLOCATE directive have the "
+          "If list items within the %s directive have the "
           "SAVE attribute, are a common block name, or are "
           "declared in the scope of a module, then only "
           "predefined memory allocator parameters can be used "
-          "in the allocator clause"_err_en_US);
+          "in the allocator clause"_err_en_US,
+          ContextDirectiveAsFortran());
     }
   }
 }
@@ -970,6 +995,13 @@ void OmpStructureChecker::CheckThreadprivateOrDeclareTargetVar(
         common::visitors{
             [&](const parser::Designator &) {
               if (const auto *name{parser::Unwrap<parser::Name>(ompObject)}) {
+                // The symbol is null, return early, CheckSymbolNames
+                // should have already reported the missing symbol as a
+                // diagnostic error
+                if (!name->symbol) {
+                  return;
+                }
+
                 if (name->symbol->GetUltimate().IsSubprogram()) {
                   if (GetContext().directive ==
                       llvm::omp::Directive::OMPD_threadprivate)
@@ -1061,6 +1093,7 @@ void OmpStructureChecker::Enter(const parser::OpenMPThreadprivate &c) {
 void OmpStructureChecker::Leave(const parser::OpenMPThreadprivate &c) {
   const auto &dir{std::get<parser::Verbatim>(c.t)};
   const auto &objectList{std::get<parser::OmpObjectList>(c.t)};
+  CheckSymbolNames(dir.source, objectList);
   CheckIsVarPartOfAnotherVar(dir.source, objectList);
   CheckThreadprivateOrDeclareTargetVar(objectList);
   dirContext_.pop_back();
@@ -1108,6 +1141,39 @@ void OmpStructureChecker::Enter(const parser::OmpClause::Allocator &x) {
   RequiresPositiveParameter(llvm::omp::Clause::OMPC_allocator, x.v);
 }
 
+void OmpStructureChecker::Enter(const parser::OmpClause::Allocate &x) {
+  CheckAllowed(llvm::omp::Clause::OMPC_allocate);
+  if (const auto &modifier{
+          std::get<std::optional<parser::OmpAllocateClause::AllocateModifier>>(
+              x.v.t)}) {
+    common::visit(
+        common::visitors{
+            [&](const parser::OmpAllocateClause::AllocateModifier::Allocator
+                    &y) {
+              RequiresPositiveParameter(llvm::omp::Clause::OMPC_allocate, y.v);
+              isPredefinedAllocator = GetIntValue(y.v).has_value();
+            },
+            [&](const parser::OmpAllocateClause::AllocateModifier::
+                    ComplexModifier &y) {
+              const auto &alloc = std::get<
+                  parser::OmpAllocateClause::AllocateModifier::Allocator>(y.t);
+              const auto &align =
+                  std::get<parser::OmpAllocateClause::AllocateModifier::Align>(
+                      y.t);
+              RequiresPositiveParameter(
+                  llvm::omp::Clause::OMPC_allocate, alloc.v);
+              RequiresPositiveParameter(
+                  llvm::omp::Clause::OMPC_allocate, align.v);
+              isPredefinedAllocator = GetIntValue(alloc.v).has_value();
+            },
+            [&](const parser::OmpAllocateClause::AllocateModifier::Align &y) {
+              RequiresPositiveParameter(llvm::omp::Clause::OMPC_allocate, y.v);
+            },
+        },
+        modifier->u);
+  }
+}
+
 void OmpStructureChecker::Enter(const parser::OpenMPDeclareTargetConstruct &x) {
   const auto &dir{std::get<parser::Verbatim>(x.t)};
   PushContext(dir.source, llvm::omp::Directive::OMPD_declare_target);
@@ -1117,20 +1183,49 @@ void OmpStructureChecker::Enter(const parser::OpenMPDeclareTargetConstruct &x) {
   }
 }
 
+void OmpStructureChecker::CheckSymbolNames(
+    const parser::CharBlock &source, const parser::OmpObjectList &objList) {
+  for (const auto &ompObject : objList.v) {
+    common::visit(
+        common::visitors{
+            [&](const parser::Designator &designator) {
+              if (const auto *name{parser::Unwrap<parser::Name>(ompObject)}) {
+                if (!name->symbol) {
+                  context_.Say(source,
+                      "The given %s directive clause has an invalid argument"_err_en_US,
+                      ContextDirectiveAsFortran());
+                }
+              }
+            },
+            [&](const parser::Name &name) {
+              if (!name.symbol) {
+                context_.Say(source,
+                    "The given %s directive clause has an invalid argument"_err_en_US,
+                    ContextDirectiveAsFortran());
+              }
+            },
+        },
+        ompObject.u);
+  }
+}
+
 void OmpStructureChecker::Leave(const parser::OpenMPDeclareTargetConstruct &x) {
   const auto &dir{std::get<parser::Verbatim>(x.t)};
   const auto &spec{std::get<parser::OmpDeclareTargetSpecifier>(x.t)};
   if (const auto *objectList{parser::Unwrap<parser::OmpObjectList>(spec.u)}) {
+    CheckSymbolNames(dir.source, *objectList);
     CheckIsVarPartOfAnotherVar(dir.source, *objectList);
     CheckThreadprivateOrDeclareTargetVar(*objectList);
   } else if (const auto *clauseList{
                  parser::Unwrap<parser::OmpClauseList>(spec.u)}) {
     for (const auto &clause : clauseList->v) {
       if (const auto *toClause{std::get_if<parser::OmpClause::To>(&clause.u)}) {
+        CheckSymbolNames(dir.source, toClause->v);
         CheckIsVarPartOfAnotherVar(dir.source, toClause->v);
         CheckThreadprivateOrDeclareTargetVar(toClause->v);
       } else if (const auto *linkClause{
                      std::get_if<parser::OmpClause::Link>(&clause.u)}) {
+        CheckSymbolNames(dir.source, linkClause->v);
         CheckIsVarPartOfAnotherVar(dir.source, linkClause->v);
         CheckThreadprivateOrDeclareTargetVar(linkClause->v);
       }
@@ -1154,6 +1249,33 @@ void OmpStructureChecker::Leave(const parser::OpenMPExecutableAllocate &x) {
   const auto &objectList{std::get<std::optional<parser::OmpObjectList>>(x.t)};
   if (objectList)
     CheckPredefinedAllocatorRestriction(dir.source, *objectList);
+  dirContext_.pop_back();
+}
+
+void OmpStructureChecker::Enter(const parser::OpenMPAllocatorsConstruct &x) {
+  isPredefinedAllocator = true;
+  const auto &dir{std::get<parser::Verbatim>(x.t)};
+  PushContextAndClauseSets(dir.source, llvm::omp::Directive::OMPD_allocators);
+  const auto &clauseList{std::get<parser::OmpClauseList>(x.t)};
+  for (const auto &clause : clauseList.v) {
+    if (const auto *allocClause{
+            parser::Unwrap<parser::OmpClause::Allocate>(clause)}) {
+      CheckIsVarPartOfAnotherVar(
+          dir.source, std::get<parser::OmpObjectList>(allocClause->v.t));
+    }
+  }
+}
+
+void OmpStructureChecker::Leave(const parser::OpenMPAllocatorsConstruct &x) {
+  const auto &dir{std::get<parser::Verbatim>(x.t)};
+  const auto &clauseList{std::get<parser::OmpClauseList>(x.t)};
+  for (const auto &clause : clauseList.v) {
+    if (const auto *allocClause{
+            std::get_if<parser::OmpClause::Allocate>(&clause.u)}) {
+      CheckPredefinedAllocatorRestriction(
+          dir.source, std::get<parser::OmpObjectList>(allocClause->v.t));
+    }
+  }
   dirContext_.pop_back();
 }
 
@@ -1797,9 +1919,12 @@ void OmpStructureChecker::Leave(const parser::OmpClauseList &) {
               common::visitors{
                   [&](const parser::Designator &) {
                     if (const auto *name{
-                            parser::Unwrap<parser::Name>(ompObject)})
-                      testThreadprivateVarErr(
-                          name->symbol->GetUltimate(), *name, type);
+                            parser::Unwrap<parser::Name>(ompObject)}) {
+                      if (name->symbol) {
+                        testThreadprivateVarErr(
+                            name->symbol->GetUltimate(), *name, type);
+                      }
+                    }
                   },
                   [&](const parser::Name &name) {
                     if (name.symbol) {
@@ -1829,7 +1954,6 @@ CHECK_SIMPLE_CLAUSE(AcqRel, OMPC_acq_rel)
 CHECK_SIMPLE_CLAUSE(Acquire, OMPC_acquire)
 CHECK_SIMPLE_CLAUSE(AtomicDefaultMemOrder, OMPC_atomic_default_mem_order)
 CHECK_SIMPLE_CLAUSE(Affinity, OMPC_affinity)
-CHECK_SIMPLE_CLAUSE(Allocate, OMPC_allocate)
 CHECK_SIMPLE_CLAUSE(Capture, OMPC_capture)
 CHECK_SIMPLE_CLAUSE(Default, OMPC_default)
 CHECK_SIMPLE_CLAUSE(Depobj, OMPC_depobj)
@@ -1897,6 +2021,8 @@ CHECK_SIMPLE_CLAUSE(Bind, OMPC_bind)
 CHECK_SIMPLE_CLAUSE(Align, OMPC_align)
 CHECK_SIMPLE_CLAUSE(Compare, OMPC_compare)
 CHECK_SIMPLE_CLAUSE(CancellationConstructType, OMPC_cancellation_construct_type)
+CHECK_SIMPLE_CLAUSE(Doacross, OMPC_doacross)
+CHECK_SIMPLE_CLAUSE(OmpxAttribute, OMPC_ompx_attribute)
 
 CHECK_REQ_SCALAR_INT_CLAUSE(Grainsize, OMPC_grainsize)
 CHECK_REQ_SCALAR_INT_CLAUSE(NumTasks, OMPC_num_tasks)
@@ -2123,6 +2249,7 @@ bool OmpStructureChecker::IsDataRefTypeParamInquiry(
 void OmpStructureChecker::CheckIsVarPartOfAnotherVar(
     const parser::CharBlock &source, const parser::OmpObjectList &objList) {
   OmpDirectiveSet nonPartialVarSet{llvm::omp::Directive::OMPD_allocate,
+      llvm::omp::Directive::OMPD_allocators,
       llvm::omp::Directive::OMPD_threadprivate,
       llvm::omp::Directive::OMPD_declare_target};
   for (const auto &ompObject : objList.v) {
@@ -2766,16 +2893,17 @@ const parser::OmpObjectList *OmpStructureChecker::GetOmpObjectList(
     const parser::OmpClause &clause) {
 
   // Clauses with OmpObjectList as its data member
-  using MemberObjectListClauses =
-      std::tuple<parser::OmpClause::Copyprivate, parser::OmpClause::Copyin,
-          parser::OmpClause::Firstprivate, parser::OmpClause::From,
-          parser::OmpClause::Lastprivate, parser::OmpClause::Link,
-          parser::OmpClause::Private, parser::OmpClause::Shared,
-          parser::OmpClause::To, parser::OmpClause::UseDevicePtr>;
+  using MemberObjectListClauses = std::tuple<parser::OmpClause::Copyprivate,
+      parser::OmpClause::Copyin, parser::OmpClause::Firstprivate,
+      parser::OmpClause::From, parser::OmpClause::Lastprivate,
+      parser::OmpClause::Link, parser::OmpClause::Private,
+      parser::OmpClause::Shared, parser::OmpClause::To,
+      parser::OmpClause::UseDevicePtr, parser::OmpClause::UseDeviceAddr>;
 
   // Clauses with OmpObjectList in the tuple
-  using TupleObjectListClauses = std::tuple<parser::OmpClause::Allocate,
-      parser::OmpClause::Map, parser::OmpClause::Reduction>;
+  using TupleObjectListClauses =
+      std::tuple<parser::OmpClause::Allocate, parser::OmpClause::Map,
+          parser::OmpClause::Reduction, parser::OmpClause::Aligned>;
 
   // TODO:: Generate the tuples using TableGen.
   // Handle other constructs with OmpObjectList such as OpenMPThreadprivate.

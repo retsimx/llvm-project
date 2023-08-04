@@ -8,14 +8,13 @@
 
 // UNSUPPORTED: c++03, c++11, c++14
 
-// REQUIRES: with-pstl
+// UNSUPPORTED: libcpp-has-no-incomplete-pstl
 
 // <algorithm>
 
-// template<class ExecutionPolicy, class ForwardIterator, class Function>
-//   void for_each(ExecutionPolicy&& exec,
-//                 ForwardIterator first, ForwardIterator last,
-//                 Function f);
+// template<class ExecutionPolicy, class ForwardIterator, class Size, class Function>
+//   ForwardIterator for_each_n(ExecutionPolicy&& exec, ForwardIterator first, Size n,
+//                              Function f);
 
 #include <algorithm>
 #include <atomic>

@@ -10,19 +10,20 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "TreeTransform.h"
 #include "clang/Sema/SemaConcept.h"
-#include "clang/Sema/Sema.h"
-#include "clang/Sema/SemaInternal.h"
-#include "clang/Sema/SemaDiagnostic.h"
-#include "clang/Sema/TemplateDeduction.h"
-#include "clang/Sema/Template.h"
-#include "clang/Sema/Overload.h"
-#include "clang/Sema/Initialization.h"
+#include "TreeTransform.h"
 #include "clang/AST/ASTLambda.h"
 #include "clang/AST/ExprConcepts.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/OperatorPrecedence.h"
+#include "clang/Sema/EnterExpressionEvaluationContext.h"
+#include "clang/Sema/Initialization.h"
+#include "clang/Sema/Overload.h"
+#include "clang/Sema/Sema.h"
+#include "clang/Sema/SemaDiagnostic.h"
+#include "clang/Sema/SemaInternal.h"
+#include "clang/Sema/Template.h"
+#include "clang/Sema/TemplateDeduction.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/PointerUnion.h"
 #include "llvm/ADT/StringExtras.h"
@@ -259,11 +260,6 @@ calculateConstraintSatisfaction(Sema &S, const Expr *ConstraintExpr,
             StringRef(Mem, MessageSize)});
     return SubstitutedAtomicExpr;
   }
-
-  // FIXME: Remove this workaround.
-  // It's necessary to investigate how we get here.
-  if (SubstitutedAtomicExpr.get()->isValueDependent())
-    return SubstitutedAtomicExpr;
 
   EnterExpressionEvaluationContext ConstantEvaluated(
       S, Sema::ExpressionEvaluationContext::ConstantEvaluated);
@@ -683,6 +679,15 @@ bool Sema::CheckFunctionConstraints(const FunctionDecl *FD,
     return false;
   }
 
+  // A lambda conversion operator has the same constraints as the call operator
+  // and constraints checking relies on whether we are in a lambda call operator
+  // (and may refer to its parameters), so check the call operator instead.
+  if (const auto *MD = dyn_cast<CXXConversionDecl>(FD);
+      MD && isLambdaConversionOperator(const_cast<CXXConversionDecl *>(MD)))
+    return CheckFunctionConstraints(MD->getParent()->getLambdaCallOperator(),
+                                    Satisfaction, UsageLoc,
+                                    ForOverloadResolution);
+
   DeclContext *CtxToSave = const_cast<FunctionDecl *>(FD);
 
   while (isLambdaCallOperator(CtxToSave) || FD->isTransparentContext()) {
@@ -768,6 +773,15 @@ static const Expr *SubstituteConstraintExpression(Sema &S, const NamedDecl *ND,
     return ConstrExpr;
 
   Sema::SFINAETrap SFINAE(S, /*AccessCheckingSFINAE=*/false);
+
+  Sema::InstantiatingTemplate Inst(
+      S, ND->getLocation(),
+      Sema::InstantiatingTemplate::ConstraintNormalization{},
+      const_cast<NamedDecl *>(ND), SourceRange{});
+
+  if (Inst.isInvalid())
+    return nullptr;
+
   std::optional<Sema::CXXThisScopeRAII> ThisScope;
   if (auto *RD = dyn_cast<CXXRecordDecl>(ND->getDeclContext()))
     ThisScope.emplace(S, const_cast<CXXRecordDecl *>(RD), Qualifiers());
@@ -784,7 +798,9 @@ bool Sema::AreConstraintExpressionsEqual(const NamedDecl *Old,
                                          const Expr *NewConstr) {
   if (OldConstr == NewConstr)
     return true;
-  if (Old && New && Old != New) {
+  // C++ [temp.constr.decl]p4
+  if (Old && New && Old != New &&
+      Old->getLexicalDeclContext() != New->getLexicalDeclContext()) {
     if (const Expr *SubstConstr =
             SubstituteConstraintExpression(*this, Old, OldConstr))
       OldConstr = SubstConstr;
@@ -1148,6 +1164,11 @@ void Sema::DiagnoseUnsatisfiedConstraint(
 const NormalizedConstraint *
 Sema::getNormalizedAssociatedConstraints(
     NamedDecl *ConstrainedDecl, ArrayRef<const Expr *> AssociatedConstraints) {
+  // In case the ConstrainedDecl comes from modules, it is necessary to use
+  // the canonical decl to avoid different atomic constraints with the 'same'
+  // declarations.
+  ConstrainedDecl = cast<NamedDecl>(ConstrainedDecl->getCanonicalDecl());
+
   auto CacheEntry = NormalizationCache.find(ConstrainedDecl);
   if (CacheEntry == NormalizationCache.end()) {
     auto Normalized =

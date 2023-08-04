@@ -179,7 +179,15 @@ static auto qualifyCalleeCandidates(
           return {FunctionImporter::ImportFailureReason::InterposableLinkage,
                   GVSummary};
 
-        auto *Summary = cast<FunctionSummary>(GVSummary->getBaseObject());
+        auto *Summary = dyn_cast<FunctionSummary>(GVSummary->getBaseObject());
+
+        // Ignore any callees that aren't actually functions. This could happen
+        // in the case of GUID hash collisions. It could also happen in theory
+        // for SamplePGO profiles collected on old versions of the code after
+        // renaming, since we synthesize edges to any inlined callees appearing
+        // in the profile.
+        if (!Summary)
+          return {FunctionImporter::ImportFailureReason::GlobalVar, GVSummary};
 
         // If this is a local function, make sure we import the copy
         // in the caller's module. The only time a local function can
@@ -678,17 +686,23 @@ checkVariableImport(const ModuleSummaryIndex &Index,
   // Checks that all GUIDs of read/writeonly vars we see in export lists
   // are also in the import lists. Otherwise we my face linker undefs,
   // because readonly and writeonly vars are internalized in their
-  // source modules.
-  auto IsReadOrWriteOnlyVar = [&](StringRef ModulePath, const ValueInfo &VI) {
+  // source modules. The exception would be if it has a linkage type indicating
+  // that there may have been a copy existing in the importing module (e.g.
+  // linkonce_odr). In that case we cannot accurately do this checking.
+  auto IsReadOrWriteOnlyVarNeedingImporting = [&](StringRef ModulePath,
+                                                  const ValueInfo &VI) {
     auto *GVS = dyn_cast_or_null<GlobalVarSummary>(
         Index.findSummaryInModule(VI, ModulePath));
-    return GVS && (Index.isReadOnly(GVS) || Index.isWriteOnly(GVS));
+    return GVS && (Index.isReadOnly(GVS) || Index.isWriteOnly(GVS)) &&
+           !(GVS->linkage() == GlobalValue::AvailableExternallyLinkage ||
+             GVS->linkage() == GlobalValue::WeakODRLinkage ||
+             GVS->linkage() == GlobalValue::LinkOnceODRLinkage);
   };
 
   for (auto &ExportPerModule : ExportLists)
     for (auto &VI : ExportPerModule.second)
       if (!FlattenedImports.count(VI.getGUID()) &&
-          IsReadOrWriteOnlyVar(ExportPerModule.first(), VI))
+          IsReadOrWriteOnlyVarNeedingImporting(ExportPerModule.first(), VI))
         return false;
 
   return true;

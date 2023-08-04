@@ -41,20 +41,31 @@ enum class SparseParallelizationStrategy {
   kAnyStorageOuterLoop,
   kDenseAnyLoop,
   kAnyStorageAnyLoop
-  // TODO: support reduction parallelization too?
 };
+
+// TODO : Zero copy is disabled due to correctness bugs.Tracker #64316
+enum class GPUDataTransferStrategy { kRegularDMA, kZeroCopy, kPinnedDMA };
 
 #define GEN_PASS_DECL
 #include "mlir/Dialect/SparseTensor/Transforms/Passes.h.inc"
 
 /// Options for the Sparsification pass.
 struct SparsificationOptions {
-  SparsificationOptions(SparseParallelizationStrategy p, bool idxReduc)
-      : parallelizationStrategy(p), enableIndexReduction(idxReduc) {}
+  SparsificationOptions(SparseParallelizationStrategy p,
+                        GPUDataTransferStrategy t, bool idxReduc,
+                        bool gpuLibgen, bool enableRT)
+      : parallelizationStrategy(p), gpuDataTransferStrategy(t),
+        enableIndexReduction(idxReduc), enableGPULibgen(gpuLibgen),
+        enableRuntimeLibrary(enableRT) {}
   SparsificationOptions()
-      : SparsificationOptions(SparseParallelizationStrategy::kNone, false) {}
+      : SparsificationOptions(SparseParallelizationStrategy::kNone,
+                              GPUDataTransferStrategy::kRegularDMA, false,
+                              false, true) {}
   SparseParallelizationStrategy parallelizationStrategy;
+  GPUDataTransferStrategy gpuDataTransferStrategy;
   bool enableIndexReduction;
+  bool enableGPULibgen;
+  bool enableRuntimeLibrary;
 };
 
 /// Sets up sparsification rewriting rules with the given options.
@@ -205,6 +216,9 @@ std::unique_ptr<Pass> createSparseVectorizationPass(unsigned vectorLength,
 
 void populateSparseGPUCodegenPatterns(RewritePatternSet &patterns,
                                       unsigned numThreads);
+
+void populateSparseGPULibgenPatterns(RewritePatternSet &patterns, bool enableRT,
+                                     GPUDataTransferStrategy gpuDataTransfer);
 
 std::unique_ptr<Pass> createSparseGPUCodegenPass();
 std::unique_ptr<Pass> createSparseGPUCodegenPass(unsigned numThreads);

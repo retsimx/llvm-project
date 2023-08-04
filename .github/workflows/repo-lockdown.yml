@@ -2,6 +2,18 @@ name: 'Repo Lockdown'
 on:
   pull_request_target:
     types: opened
+    paths-ignore:
+      - 'libcxx/**'
+      - 'libcxxabi/**'
+      - 'libunwind/**'
+      - 'runtimes/**'
+      - 'lldb/**'
+      - '.github/**'
+      - 'clang/lib/Format/**'
+      - 'clang/include/clang/Format/**'
+      - 'clang/docs/**'
+      - 'clang/unitests/Format/**'
+      - 'clang/tools/clang-format/**'
 
 permissions:
   pull-requests: write

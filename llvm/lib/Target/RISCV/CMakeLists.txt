@@ -26,17 +26,18 @@ add_llvm_target(RISCVCodeGen
   RISCVExpandPseudoInsts.cpp
   RISCVFrameLowering.cpp
   RISCVGatherScatterLowering.cpp
-  RISCVInsertNTLHInsts.cpp
   RISCVInsertVSETVLI.cpp
+  RISCVInsertReadWriteCSR.cpp
   RISCVInstrInfo.cpp
   RISCVISelDAGToDAG.cpp
   RISCVISelLowering.cpp
   RISCVMachineFunctionInfo.cpp
   RISCVMacroFusion.cpp
-  RISCVMCInstLower.cpp
   RISCVMergeBaseOffset.cpp
   RISCVOptWInstrs.cpp
   RISCVRedundantCopyElimination.cpp
+  RISCVMoveMerger.cpp
+  RISCVPushPopOptimizer.cpp
   RISCVRegisterInfo.cpp
   RISCVRVVInitUndef.cpp
   RISCVSubtarget.cpp
@@ -52,6 +53,7 @@ add_llvm_target(RISCVCodeGen
   Analysis
   AsmPrinter
   CodeGen
+  CodeGenTypes
   Core
   GlobalISel
   IPO

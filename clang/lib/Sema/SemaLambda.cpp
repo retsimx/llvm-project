@@ -798,12 +798,11 @@ VarDecl *Sema::createLambdaInitCaptureVarDecl(
   return NewVD;
 }
 
-void Sema::addInitCapture(LambdaScopeInfo *LSI, VarDecl *Var,
-                          bool isReferenceType) {
+void Sema::addInitCapture(LambdaScopeInfo *LSI, VarDecl *Var, bool ByRef) {
   assert(Var->isInitCapture() && "init capture flag should be set");
-  LSI->addCapture(Var, /*isBlock*/ false, isReferenceType,
-                  /*isNested*/ false, Var->getLocation(), SourceLocation(),
-                  Var->getType(), /*Invalid*/ false);
+  LSI->addCapture(Var, /*isBlock=*/false, ByRef,
+                  /*isNested=*/false, Var->getLocation(), SourceLocation(),
+                  Var->getType(), /*Invalid=*/false);
 }
 
 // Unlike getCurLambda, getCurrentLambdaScopeUnsafe doesn't
@@ -1422,6 +1421,10 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
       LSI->CallOperator->isConsteval()
           ? ExpressionEvaluationContext::ImmediateFunctionContext
           : ExpressionEvaluationContext::PotentiallyEvaluated);
+  ExprEvalContexts.back().InImmediateFunctionContext =
+      LSI->CallOperator->isConsteval();
+  ExprEvalContexts.back().InImmediateEscalatingFunctionContext =
+      getLangOpts().CPlusPlus20 && LSI->CallOperator->isImmediateEscalating();
 }
 
 void Sema::ActOnLambdaError(SourceLocation StartLoc, Scope *CurScope,
@@ -1629,6 +1632,11 @@ static void addFunctionPointerConversion(Sema &S, SourceRange IntroducerRange,
       CallOperator->getBody()->getEndLoc());
   Conversion->setAccess(AS_public);
   Conversion->setImplicit(true);
+
+  // A non-generic lambda may still be a templated entity. We need to preserve
+  // constraints when converting the lambda to a function pointer. See GH63181.
+  if (Expr *Requires = CallOperator->getTrailingRequiresClause())
+    Conversion->setTrailingRequiresClause(Requires);
 
   if (Class->isGenericLambda()) {
     // Create a template version of the conversion operator, using the template

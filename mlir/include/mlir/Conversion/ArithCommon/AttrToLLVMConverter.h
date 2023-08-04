@@ -38,9 +38,8 @@ public:
     // Get the name of the arith fastmath attribute.
     llvm::StringRef arithFMFAttrName = SourceOp::getFastMathAttrName();
     // Remove the source fastmath attribute.
-    auto arithFMFAttr =
-        convertedAttr.erase(arithFMFAttrName)
-            .template dyn_cast_or_null<arith::FastMathFlagsAttr>();
+    auto arithFMFAttr = dyn_cast_or_null<arith::FastMathFlagsAttr>(
+        convertedAttr.erase(arithFMFAttrName));
     if (arithFMFAttr) {
       llvm::StringRef targetAttrName = TargetOp::getFastmathAttrName();
       convertedAttr.set(targetAttrName,
@@ -50,8 +49,28 @@ public:
 
   ArrayRef<NamedAttribute> getAttrs() const { return convertedAttr.getAttrs(); }
 
-private:
+protected:
   NamedAttrList convertedAttr;
+};
+
+/// Wrapper around AttrConvertFastMathToLLVM that also sets the "kinds"
+/// attribute to the bitmask specified in `Kinds`, which is used for converting
+/// operations that lower to llvm.is.fpclass.
+template <unsigned Kinds, typename SourceOp, typename TargetOp>
+class AttrConvertAddFpclassKinds
+    : public AttrConvertFastMathToLLVM<SourceOp, TargetOp> {
+public:
+  AttrConvertAddFpclassKinds(SourceOp op)
+      : AttrConvertFastMathToLLVM<SourceOp, TargetOp>(op) {
+    convertedAttr.set(
+        "kinds",
+        IntegerAttr::get(IntegerType::get(op.getContext(), 32), Kinds));
+  }
+
+  ArrayRef<NamedAttribute> getAttrs() const { return convertedAttr.getAttrs(); }
+
+protected:
+  using AttrConvertFastMathToLLVM<SourceOp, TargetOp>::convertedAttr;
 };
 } // namespace arith
 } // namespace mlir

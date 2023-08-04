@@ -25,7 +25,7 @@
 
 ! Testing last iteration check
 !CHECK-NEXT: %[[IV_CMP:.*]] = arith.cmpi eq, %[[INDX_WS]]
-!CHECK: scf.if %[[IV_CMP]] {
+!CHECK: fir.if %[[IV_CMP]] {
 
 ! Testing lastprivate val update
 !CHECK-DAG: %[[CVT:.*]] = fir.convert %[[ARG1_REF]] : (!fir.ref<!fir.char<1,5>>) -> !fir.ref<i8>
@@ -53,7 +53,7 @@ end subroutine
 
 ! Testing last iteration check
 !CHECK-DAG: %[[IV_CMP:.*]] = arith.cmpi eq, %[[INDX_WS]]
-!CHECK-DAG: scf.if %[[IV_CMP]] {
+!CHECK-DAG: fir.if %[[IV_CMP]] {
 
 ! Testing lastprivate val update
 !CHECK-NEXT: %[[CLONE_LD:.*]] = fir.load %[[CLONE]] : !fir.ref<i32>
@@ -82,7 +82,7 @@ end subroutine
 
 ! Testing last iteration check
 !CHECK: %[[IV_CMP1:.*]] = arith.cmpi eq, %[[INDX_WS]]
-!CHECK-NEXT: scf.if %[[IV_CMP1]] {
+!CHECK-NEXT: fir.if %[[IV_CMP1]] {
 ! Testing lastprivate val update
 !CHECK-DAG: %[[CLONE_LD1:.*]] = fir.load %[[CLONE1]] : !fir.ref<i32>
 !CHECK-DAG: fir.store %[[CLONE_LD1]] to %[[ARG1]] : !fir.ref<i32>
@@ -113,7 +113,7 @@ end subroutine
 
 !Testing last iteration check
 !CHECK: %[[IV_CMP1:.*]] = arith.cmpi eq, %[[INDX_WS]]
-!CHECK-NEXT: scf.if %[[IV_CMP1]] {
+!CHECK-NEXT: fir.if %[[IV_CMP1]] {
 !Testing lastprivate val update
 !CHECK-DAG: %[[CLONE_LD2:.*]] = fir.load %[[CLONE2]] : !fir.ref<i32>
 !CHECK-DAG: fir.store %[[CLONE_LD2]] to %[[ARG2]] : !fir.ref<i32>
@@ -149,7 +149,7 @@ end subroutine
 
 ! Testing last iteration check
 !CHECK: %[[IV_CMP1:.*]] = arith.cmpi eq, %[[INDX_WS]]
-!CHECK-NEXT: scf.if %[[IV_CMP1]] {
+!CHECK-NEXT: fir.if %[[IV_CMP1]] {
 ! Testing lastprivate val update
 !CHECK-NEXT: %[[CLONE_LD:.*]] = fir.load %[[CLONE2]] : !fir.ref<i32>
 !CHECK-NEXT: fir.store %[[CLONE_LD]] to %[[ARG2]] : !fir.ref<i32>
@@ -173,14 +173,14 @@ end subroutine
 !CHECK: func.func @_QPfirstpriv_lastpriv_int2(%[[ARG1:.*]]: !fir.ref<i32> {fir.bindc_name = "arg1"}) {
 !CHECK: omp.parallel  {
 ! Firstprivate update
-!CHECK-NEXT: %[[CLONE1:.*]] = fir.alloca i32 {bindc_name = "arg1"
+!CHECK: %[[CLONE1:.*]] = fir.alloca i32 {bindc_name = "arg1"
 !CHECK-NEXT: %[[FPV_LD:.*]] = fir.load %[[ARG1]] : !fir.ref<i32>
 !CHECK-NEXT: fir.store %[[FPV_LD]] to %[[CLONE1]] : !fir.ref<i32>
 !CHECK-NEXT: omp.barrier
 !CHECK: omp.wsloop for (%[[INDX_WS:.*]]) : {{.*}} {
 ! Testing last iteration check
 !CHECK: %[[IV_CMP1:.*]] = arith.cmpi eq, %[[INDX_WS]]
-!CHECK-NEXT: scf.if %[[IV_CMP1]] {
+!CHECK-NEXT: fir.if %[[IV_CMP1]] {
 ! Testing lastprivate val update
 !CHECK-NEXT: %[[CLONE_LD:.*]] = fir.load %[[CLONE1]] : !fir.ref<i32>
 !CHECK-NEXT: fir.store %[[CLONE_LD]] to %[[ARG1]] : !fir.ref<i32>

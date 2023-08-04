@@ -17,8 +17,9 @@
 #include <unordered_map>
 
 #include "Debug.h"
-#include "DeviceEnvironment.h"
+#include "Environment.h"
 #include "GlobalHandler.h"
+#include "OmptCallback.h"
 #include "PluginInterface.h"
 
 #include "llvm/BinaryFormat/ELF.h"
@@ -65,16 +66,6 @@ struct CUDAKernelTy : public GenericKernelTy {
                    uint64_t NumBlocks, KernelArgsTy &KernelArgs, void *Args,
                    AsyncInfoWrapperTy &AsyncInfoWrapper) const override;
 
-  /// The default number of blocks is common to the whole device.
-  uint32_t getDefaultNumBlocks(GenericDeviceTy &GenericDevice) const override {
-    return GenericDevice.getDefaultNumBlocks();
-  }
-
-  /// The default number of threads is common to the whole device.
-  uint32_t getDefaultNumThreads(GenericDeviceTy &GenericDevice) const override {
-    return GenericDevice.getDefaultNumThreads();
-  }
-
 private:
   /// The CUDA kernel function to execute.
   CUfunction Func;
@@ -82,16 +73,15 @@ private:
 
 /// Class wrapping a CUDA stream reference. These are the objects handled by the
 /// Stream Manager for the CUDA plugin.
-class CUDAStreamRef final : public GenericDeviceResourceRef {
-  /// The reference to the CUDA stream.
-  CUstream Stream;
+struct CUDAStreamRef final : public GenericDeviceResourceRef {
+  /// The underlying handle type for streams.
+  using HandleTy = CUstream;
 
-public:
   /// Create an empty reference to an invalid stream.
   CUDAStreamRef() : Stream(nullptr) {}
 
   /// Create a reference to an existing stream.
-  CUDAStreamRef(CUstream Stream) : Stream(Stream) {}
+  CUDAStreamRef(HandleTy Stream) : Stream(Stream) {}
 
   /// Create a new stream and save the reference. The reference must be empty
   /// before calling to this function.
@@ -120,21 +110,25 @@ public:
     return Plugin::success();
   }
 
-  /// Get the underlying CUstream.
-  operator CUstream() const { return Stream; }
+  /// Get the underlying CUDA stream.
+  operator HandleTy() const { return Stream; }
+
+private:
+  /// The reference to the CUDA stream.
+  HandleTy Stream;
 };
 
 /// Class wrapping a CUDA event reference. These are the objects handled by the
 /// Event Manager for the CUDA plugin.
-class CUDAEventRef final : public GenericDeviceResourceRef {
-  CUevent Event;
+struct CUDAEventRef final : public GenericDeviceResourceRef {
+  /// The underlying handle type for events.
+  using HandleTy = CUevent;
 
-public:
   /// Create an empty reference to an invalid event.
   CUDAEventRef() : Event(nullptr) {}
 
   /// Create a reference to an existing event.
-  CUDAEventRef(CUevent Event) : Event(Event) {}
+  CUDAEventRef(HandleTy Event) : Event(Event) {}
 
   /// Create a new event and save the reference. The reference must be empty
   /// before calling to this function.
@@ -164,7 +158,11 @@ public:
   }
 
   /// Get the underlying CUevent.
-  operator CUevent() const { return Event; }
+  operator HandleTy() const { return Event; }
+
+private:
+  /// The reference to the CUDA event.
+  HandleTy Event;
 };
 
 /// Class implementing the CUDA device images properties.
@@ -366,12 +364,25 @@ struct CUDADeviceTy : public GenericDeviceTy {
     return Plugin::check(Res, "Error in cuCtxSetCurrent: %s");
   }
 
+  /// We want to set up the RPC server for host services to the GPU if it is
+  /// availible.
+  bool shouldSetupRPCServer() const override {
+    return libomptargetSupportsRPC();
+  }
+
   /// Get the stream of the asynchronous info sructure or get a new one.
-  CUstream getStream(AsyncInfoWrapperTy &AsyncInfoWrapper) {
-    CUstream &Stream = AsyncInfoWrapper.getQueueAs<CUstream>();
-    if (!Stream)
-      Stream = CUDAStreamManager.getResource();
-    return Stream;
+  Error getStream(AsyncInfoWrapperTy &AsyncInfoWrapper, CUstream &Stream) {
+    // Get the stream (if any) from the async info.
+    Stream = AsyncInfoWrapper.getQueueAs<CUstream>();
+    if (!Stream) {
+      // There was no stream; get an idle one.
+      if (auto Err = CUDAStreamManager.getResource(Stream))
+        return Err;
+
+      // Modify the async info's stream.
+      AsyncInfoWrapper.setQueueAs<CUstream>(Stream);
+    }
+    return Plugin::success();
   }
 
   /// Getters of CUDA references.
@@ -464,13 +475,25 @@ struct CUDADeviceTy : public GenericDeviceTy {
   /// Synchronize current thread with the pending operations on the async info.
   Error synchronizeImpl(__tgt_async_info &AsyncInfo) override {
     CUstream Stream = reinterpret_cast<CUstream>(AsyncInfo.Queue);
-    CUresult Res = cuStreamSynchronize(Stream);
+    CUresult Res;
+    // If we have an RPC server running on this device we will continuously
+    // query it for work rather than blocking.
+    if (!getRPCServer()) {
+      Res = cuStreamSynchronize(Stream);
+    } else {
+      do {
+        Res = cuStreamQuery(Stream);
+        if (auto Err = getRPCServer()->runServer(*this))
+          return Err;
+      } while (Res == CUDA_ERROR_NOT_READY);
+    }
 
     // Once the stream is synchronized, return it to stream pool and reset
     // AsyncInfo. This is to make sure the synchronization only works for its
     // own tasks.
-    CUDAStreamManager.returnResource(Stream);
     AsyncInfo.Queue = nullptr;
+    if (auto Err = CUDAStreamManager.returnResource(Stream))
+      return Err;
 
     return Plugin::check(Res, "Error in cuStreamSynchronize: %s");
   }
@@ -487,8 +510,9 @@ struct CUDADeviceTy : public GenericDeviceTy {
     // Once the stream is synchronized and the operations completed (or an error
     // occurs), return it to stream pool and reset AsyncInfo. This is to make
     // sure the synchronization only works for its own tasks.
-    CUDAStreamManager.returnResource(Stream);
     AsyncInfo.Queue = nullptr;
+    if (auto Err = CUDAStreamManager.returnResource(Stream))
+      return Err;
 
     return Plugin::check(Res, "Error in cuStreamQuery: %s");
   }
@@ -513,9 +537,9 @@ struct CUDADeviceTy : public GenericDeviceTy {
     if (auto Err = setContext())
       return Err;
 
-    CUstream Stream = getStream(AsyncInfoWrapper);
-    if (!Stream)
-      return Plugin::error("Failure to get stream");
+    CUstream Stream;
+    if (auto Err = getStream(AsyncInfoWrapper, Stream))
+      return Err;
 
     CUresult Res = cuMemcpyHtoDAsync((CUdeviceptr)TgtPtr, HstPtr, Size, Stream);
     return Plugin::check(Res, "Error in cuMemcpyHtoDAsync: %s");
@@ -527,9 +551,9 @@ struct CUDADeviceTy : public GenericDeviceTy {
     if (auto Err = setContext())
       return Err;
 
-    CUstream Stream = getStream(AsyncInfoWrapper);
-    if (!Stream)
-      return Plugin::error("Failure to get stream");
+    CUstream Stream;
+    if (auto Err = getStream(AsyncInfoWrapper, Stream))
+      return Err;
 
     CUresult Res = cuMemcpyDtoHAsync(HstPtr, (CUdeviceptr)TgtPtr, Size, Stream);
     return Plugin::check(Res, "Error in cuMemcpyDtoHAsync: %s");
@@ -546,8 +570,9 @@ struct CUDADeviceTy : public GenericDeviceTy {
     if (auto Err = setContext())
       return Err;
 
-    if (!getStream(AsyncInfoWrapper))
-      return Plugin::error("Failure to get stream");
+    CUstream Stream;
+    if (auto Err = getStream(AsyncInfoWrapper, Stream))
+      return Err;
 
     return Plugin::success();
   }
@@ -572,15 +597,13 @@ struct CUDADeviceTy : public GenericDeviceTy {
   /// Create an event.
   Error createEventImpl(void **EventPtrStorage) override {
     CUevent *Event = reinterpret_cast<CUevent *>(EventPtrStorage);
-    *Event = CUDAEventManager.getResource();
-    return Plugin::success();
+    return CUDAEventManager.getResource(*Event);
   }
 
   /// Destroy a previously created event.
   Error destroyEventImpl(void *EventPtr) override {
     CUevent Event = reinterpret_cast<CUevent>(EventPtr);
-    CUDAEventManager.returnResource(Event);
-    return Plugin::success();
+    return CUDAEventManager.returnResource(Event);
   }
 
   /// Record the event.
@@ -588,9 +611,9 @@ struct CUDADeviceTy : public GenericDeviceTy {
                         AsyncInfoWrapperTy &AsyncInfoWrapper) override {
     CUevent Event = reinterpret_cast<CUevent>(EventPtr);
 
-    CUstream Stream = getStream(AsyncInfoWrapper);
-    if (!Stream)
-      return Plugin::error("Failure to get stream");
+    CUstream Stream;
+    if (auto Err = getStream(AsyncInfoWrapper, Stream))
+      return Err;
 
     CUresult Res = cuEventRecord(Event, Stream);
     return Plugin::check(Res, "Error in cuEventRecord: %s");
@@ -601,9 +624,9 @@ struct CUDADeviceTy : public GenericDeviceTy {
                       AsyncInfoWrapperTy &AsyncInfoWrapper) override {
     CUevent Event = reinterpret_cast<CUevent>(EventPtr);
 
-    CUstream Stream = getStream(AsyncInfoWrapper);
-    if (!Stream)
-      return Plugin::error("Failure to get stream");
+    CUstream Stream;
+    if (auto Err = getStream(AsyncInfoWrapper, Stream))
+      return Err;
 
     // Do not use CU_EVENT_WAIT_DEFAULT here as it is only available from
     // specific CUDA version, and defined as 0x0. In previous version, per CUDA
@@ -620,147 +643,170 @@ struct CUDADeviceTy : public GenericDeviceTy {
   }
 
   /// Print information about the device.
-  Error printInfoImpl() override {
+  Error obtainInfoImpl(InfoQueueTy &Info) override {
     char TmpChar[1000];
-    std::string TmpStr;
+    const char *TmpCharPtr;
     size_t TmpSt;
-    int TmpInt, TmpInt2, TmpInt3;
+    int TmpInt;
 
-    // TODO: All these calls should be checked, but the whole printInfo must be
-    // improved, so we will refactor it in the future.
-    cuDriverGetVersion(&TmpInt);
-    printf("    CUDA Driver Version: \t\t%d \n", TmpInt);
-    printf("    CUDA Device Number: \t\t%d \n", DeviceId);
+    CUresult Res = cuDriverGetVersion(&TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("CUDA Driver Version", TmpInt);
 
-    cuDeviceGetName(TmpChar, 1000, Device);
-    printf("    Device Name: \t\t\t%s \n", TmpChar);
+    Info.add("CUDA OpenMP Device Number", DeviceId);
 
-    cuDeviceTotalMem(&TmpSt, Device);
-    printf("    Global Memory Size: \t\t%zu bytes \n", TmpSt);
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT,
-                         Device);
-    printf("    Number of Multiprocessors: \t\t%d \n", TmpInt);
+    Res = cuDeviceGetName(TmpChar, 1000, Device);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Device Name", TmpChar);
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_GPU_OVERLAP, Device);
-    printf("    Concurrent Copy and Execution: \t%s \n", TmpInt ? "Yes" : "No");
+    Res = cuDeviceTotalMem(&TmpSt, Device);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Global Memory Size", TmpSt, "bytes");
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_TOTAL_CONSTANT_MEMORY,
-                         Device);
-    printf("    Total Constant Memory: \t\t%d bytes\n", TmpInt);
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Number of Multiprocessors", TmpInt);
 
-    cuDeviceGetAttribute(
-        &TmpInt, CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK, Device);
-    printf("    Max Shared Memory per Block: \t%d bytes \n", TmpInt);
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_GPU_OVERLAP, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Concurrent Copy and Execution", (bool)TmpInt);
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_BLOCK,
-                         Device),
-        printf("    Registers per Block: \t\t%d \n", TmpInt);
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_TOTAL_CONSTANT_MEMORY, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Total Constant Memory", TmpInt, "bytes");
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_WARP_SIZE, Device);
-    printf("    Warp Size: \t\t\t\t%d Threads \n", TmpInt);
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK,
+                           TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Max Shared Memory per Block", TmpInt, "bytes");
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
-                         Device);
-    printf("    Maximum Threads per Block: \t\t%d \n", TmpInt);
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_BLOCK, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Registers per Block", TmpInt);
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X, Device);
-    cuDeviceGetAttribute(&TmpInt2, CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y, Device);
-    cuDeviceGetAttribute(&TmpInt3, CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z, Device);
-    printf("    Maximum Block Dimensions: \t\t%d, %d, %d \n", TmpInt, TmpInt2,
-           TmpInt3);
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_WARP_SIZE, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Warp Size", TmpInt);
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X, Device);
-    cuDeviceGetAttribute(&TmpInt2, CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y, Device);
-    cuDeviceGetAttribute(&TmpInt3, CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z, Device);
-    printf("    Maximum Grid Dimensions: \t\t%d x %d x %d \n", TmpInt, TmpInt2,
-           TmpInt3);
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Maximum Threads per Block", TmpInt);
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_MAX_PITCH, Device);
-    printf("    Maximum Memory Pitch: \t\t%d bytes \n", TmpInt);
+    Info.add("Maximum Block Dimensions", "");
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add<InfoLevel2>("x", TmpInt);
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add<InfoLevel2>("y", TmpInt);
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add<InfoLevel2>("z", TmpInt);
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_TEXTURE_ALIGNMENT,
-                         Device);
-    printf("    Texture Alignment: \t\t\t%d bytes \n", TmpInt);
+    Info.add("Maximum Grid Dimensions", "");
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add<InfoLevel2>("x", TmpInt);
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add<InfoLevel2>("y", TmpInt);
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add<InfoLevel2>("z", TmpInt);
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_CLOCK_RATE, Device);
-    printf("    Clock Rate: \t\t\t%d kHz\n", TmpInt);
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_MAX_PITCH, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Maximum Memory Pitch", TmpInt, "bytes");
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_KERNEL_EXEC_TIMEOUT,
-                         Device);
-    printf("    Execution Timeout: \t\t\t%s \n", TmpInt ? "Yes" : "No");
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_TEXTURE_ALIGNMENT, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Texture Alignment", TmpInt, "bytes");
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_INTEGRATED, Device);
-    printf("    Integrated Device: \t\t\t%s \n", TmpInt ? "Yes" : "No");
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_CLOCK_RATE, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Clock Rate", TmpInt, "kHz");
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_CAN_MAP_HOST_MEMORY,
-                         Device);
-    printf("    Can Map Host Memory: \t\t%s \n", TmpInt ? "Yes" : "No");
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_KERNEL_EXEC_TIMEOUT, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Execution Timeout", (bool)TmpInt);
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_COMPUTE_MODE, Device);
-    if (TmpInt == CU_COMPUTEMODE_DEFAULT)
-      TmpStr = "DEFAULT";
-    else if (TmpInt == CU_COMPUTEMODE_PROHIBITED)
-      TmpStr = "PROHIBITED";
-    else if (TmpInt == CU_COMPUTEMODE_EXCLUSIVE_PROCESS)
-      TmpStr = "EXCLUSIVE PROCESS";
-    else
-      TmpStr = "unknown";
-    printf("    Compute Mode: \t\t\t%s \n", TmpStr.c_str());
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_INTEGRATED, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Integrated Device", (bool)TmpInt);
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_CONCURRENT_KERNELS,
-                         Device);
-    printf("    Concurrent Kernels: \t\t%s \n", TmpInt ? "Yes" : "No");
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_CAN_MAP_HOST_MEMORY, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Can Map Host Memory", (bool)TmpInt);
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_ECC_ENABLED, Device);
-    printf("    ECC Enabled: \t\t\t%s \n", TmpInt ? "Yes" : "No");
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_COMPUTE_MODE, TmpInt);
+    if (Res == CUDA_SUCCESS) {
+      if (TmpInt == CU_COMPUTEMODE_DEFAULT)
+        TmpCharPtr = "Default";
+      else if (TmpInt == CU_COMPUTEMODE_PROHIBITED)
+        TmpCharPtr = "Prohibited";
+      else if (TmpInt == CU_COMPUTEMODE_EXCLUSIVE_PROCESS)
+        TmpCharPtr = "Exclusive process";
+      else
+        TmpCharPtr = "Unknown";
+      Info.add("Compute Mode", TmpCharPtr);
+    }
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_MEMORY_CLOCK_RATE,
-                         Device);
-    printf("    Memory Clock Rate: \t\t\t%d kHz\n", TmpInt);
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_CONCURRENT_KERNELS, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Concurrent Kernels", (bool)TmpInt);
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_GLOBAL_MEMORY_BUS_WIDTH,
-                         Device);
-    printf("    Memory Bus Width: \t\t\t%d bits\n", TmpInt);
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_ECC_ENABLED, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("ECC Enabled", (bool)TmpInt);
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_L2_CACHE_SIZE, Device);
-    printf("    L2 Cache Size: \t\t\t%d bytes \n", TmpInt);
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_MEMORY_CLOCK_RATE, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Memory Clock Rate", TmpInt, "kHz");
 
-    cuDeviceGetAttribute(
-        &TmpInt, CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR, Device);
-    printf("    Max Threads Per SMP: \t\t%d \n", TmpInt);
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_GLOBAL_MEMORY_BUS_WIDTH, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Memory Bus Width", TmpInt, "bits");
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_ASYNC_ENGINE_COUNT,
-                         Device);
-    printf("    Async Engines: \t\t\t%s (%d) \n", TmpInt ? "Yes" : "No",
-           TmpInt);
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_L2_CACHE_SIZE, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("L2 Cache Size", TmpInt, "bytes");
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_UNIFIED_ADDRESSING,
-                         Device);
-    printf("    Unified Addressing: \t\t%s \n", TmpInt ? "Yes" : "No");
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR,
+                           TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Max Threads Per SMP", TmpInt);
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_MANAGED_MEMORY, Device);
-    printf("    Managed Memory: \t\t\t%s \n", TmpInt ? "Yes" : "No");
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_ASYNC_ENGINE_COUNT, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Async Engines", TmpInt);
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_CONCURRENT_MANAGED_ACCESS,
-                         Device);
-    printf("    Concurrent Managed Memory: \t\t%s \n", TmpInt ? "Yes" : "No");
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_UNIFIED_ADDRESSING, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Unified Addressing", (bool)TmpInt);
 
-    cuDeviceGetAttribute(
-        &TmpInt, CU_DEVICE_ATTRIBUTE_COMPUTE_PREEMPTION_SUPPORTED, Device);
-    printf("    Preemption Supported: \t\t%s \n", TmpInt ? "Yes" : "No");
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_MANAGED_MEMORY, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Managed Memory", (bool)TmpInt);
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_COOPERATIVE_LAUNCH,
-                         Device);
-    printf("    Cooperative Launch: \t\t%s \n", TmpInt ? "Yes" : "No");
+    Res =
+        getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_CONCURRENT_MANAGED_ACCESS, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Concurrent Managed Memory", (bool)TmpInt);
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_MULTI_GPU_BOARD, Device);
-    printf("    Multi-Device Boars: \t\t%s \n", TmpInt ? "Yes" : "No");
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_COMPUTE_PREEMPTION_SUPPORTED,
+                           TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Preemption Supported", (bool)TmpInt);
 
-    cuDeviceGetAttribute(&TmpInt, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
-                         Device);
-    cuDeviceGetAttribute(&TmpInt2, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
-                         Device);
-    printf("    Compute Capabilities: \t\t%d%d \n", TmpInt, TmpInt2);
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_COOPERATIVE_LAUNCH, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Cooperative Launch", (bool)TmpInt);
+
+    Res = getDeviceAttrRaw(CU_DEVICE_ATTRIBUTE_MULTI_GPU_BOARD, TmpInt);
+    if (Res == CUDA_SUCCESS)
+      Info.add("Multi-Device Boars", (bool)TmpInt);
+
+    Info.add("Compute Capabilities", ComputeCapability.str());
 
     return Plugin::success();
   }
@@ -797,10 +843,17 @@ struct CUDADeviceTy : public GenericDeviceTy {
     return Plugin::check(Res, "Error in cuDeviceGetAttribute: %s");
   }
 
+  CUresult getDeviceAttrRaw(uint32_t Kind, int &Value) {
+    return cuDeviceGetAttribute(&Value, (CUdevice_attribute)Kind, Device);
+  }
+
   /// See GenericDeviceTy::getComputeUnitKind().
   std::string getComputeUnitKind() const override {
     return ComputeCapability.str();
   }
+
+  /// Returns the clock frequency for the given NVPTX device.
+  uint64_t getClockFrequency() const override { return 1000000000; }
 
 private:
   using CUDAStreamManagerTy = GenericDeviceResourceManagerTy<CUDAStreamRef>;
@@ -835,9 +888,9 @@ Error CUDAKernelTy::launchImpl(GenericDeviceTy &GenericDevice,
                                AsyncInfoWrapperTy &AsyncInfoWrapper) const {
   CUDADeviceTy &CUDADevice = static_cast<CUDADeviceTy &>(GenericDevice);
 
-  CUstream Stream = CUDADevice.getStream(AsyncInfoWrapper);
-  if (!Stream)
-    return Plugin::error("Failure to get stream");
+  CUstream Stream;
+  if (auto Err = CUDADevice.getStream(AsyncInfoWrapper, Stream))
+    return Err;
 
   uint32_t MaxDynCGroupMem =
       std::max(KernelArgs.DynCGroupMem, GenericDevice.getDynamicMemorySize());
@@ -898,6 +951,10 @@ struct CUDAPluginTy final : public GenericPluginTy {
       DP("Failed to load CUDA shared library\n");
       return 0;
     }
+
+#ifdef OMPT_SUPPORT
+    ompt::connectLibrary();
+#endif
 
     if (Res == CUDA_ERROR_NO_DEVICE) {
       // Do not initialize if there are no devices.
@@ -1017,9 +1074,9 @@ Error CUDADeviceTy::dataExchangeImpl(const void *SrcPtr,
     }
   }
 
-  CUstream Stream = getStream(AsyncInfoWrapper);
-  if (!Stream)
-    return Plugin::error("Failure to get stream");
+  CUstream Stream;
+  if (auto Err = getStream(AsyncInfoWrapper, Stream))
+    return Err;
 
   if (CanAccessPeer) {
     // TODO: Should we fallback to D2D if peer access fails?

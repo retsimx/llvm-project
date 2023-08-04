@@ -154,7 +154,7 @@ TEST(Local, ReplaceDbgDeclare) {
   ASSERT_TRUE(Inst);
   auto *DII = dyn_cast<DbgDeclareInst>(Inst);
   ASSERT_TRUE(DII);
-  Value *NewBase = Constant::getNullValue(Type::getInt32PtrTy(C));
+  Value *NewBase = Constant::getNullValue(PointerType::getUnqual(C));
   DIBuilder DIB(*M);
   replaceDbgDeclare(AI, NewBase, DIB, DIExpression::ApplyOffset, 0);
 
@@ -586,21 +586,6 @@ TEST_F(SalvageDebugInfoTest, RecursiveBlockSimplification) {
   bool Deleted = SimplifyInstructionsInBlock(BB);
   ASSERT_TRUE(Deleted);
   verifyDebugValuesAreSalvaged();
-}
-
-TEST(Local, SimplifyVScaleWithRange) {
-  LLVMContext C;
-  Module M("Module", C);
-
-  IntegerType *Ty = Type::getInt32Ty(C);
-  Function *VScale = Intrinsic::getDeclaration(&M, Intrinsic::vscale, {Ty});
-  auto *CI = CallInst::Create(VScale, {}, "vscale");
-
-  // Test that simplifyCall won't try to query it's parent function for
-  // vscale_range attributes in order to simplify llvm.vscale -> constant.
-  EXPECT_EQ(simplifyCall(CI, VScale, {}, SimplifyQuery(M.getDataLayout())),
-            nullptr);
-  delete CI;
 }
 
 TEST(Local, wouldInstructionBeTriviallyDead) {

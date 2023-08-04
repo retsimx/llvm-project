@@ -370,8 +370,13 @@ public:
   void SelectPredicatedLoad(SDNode *N, unsigned NumVecs, unsigned Scale,
                             unsigned Opc_rr, unsigned Opc_ri,
                             bool IsIntr = false);
+  void SelectContiguousMultiVectorLoad(SDNode *N, unsigned NumVecs,
+                                       unsigned Scale, unsigned Opc_ri,
+                                       unsigned Opc_rr);
   void SelectDestructiveMultiIntrinsic(SDNode *N, unsigned NumVecs,
-                                       bool IsZmMulti, unsigned Opcode);
+                                       bool IsZmMulti, unsigned Opcode,
+                                       bool HasPred = false);
+  void SelectPExtPair(SDNode *N, unsigned Opc);
   void SelectWhilePair(SDNode *N, unsigned Opc);
   void SelectCVTIntrinsic(SDNode *N, unsigned NumVecs, unsigned Opcode);
   void SelectClamp(SDNode *N, unsigned NumVecs, unsigned Opcode);
@@ -415,7 +420,6 @@ public:
   bool tryBitfieldInsertOp(SDNode *N);
   bool tryBitfieldInsertInZeroOp(SDNode *N);
   bool tryShiftAmountMod(SDNode *N);
-  bool tryHighFPExt(SDNode *N);
 
   bool tryReadRegister(SDNode *N);
   bool tryWriteRegister(SDNode *N);
@@ -1652,6 +1656,28 @@ static unsigned SelectOpcodeFromVT(EVT VT, ArrayRef<unsigned> Opcodes) {
   return (Opcodes.size() <= Offset) ? 0 : Opcodes[Offset];
 }
 
+// This function is almost identical to SelectWhilePair, but has an
+// extra check on the range of the immediate operand.
+// TODO: Merge these two functions together at some point?
+void AArch64DAGToDAGISel::SelectPExtPair(SDNode *N, unsigned Opc) {
+  // Immediate can be either 0 or 1.
+  if (ConstantSDNode *Imm = dyn_cast<ConstantSDNode>(N->getOperand(2)))
+    if (Imm->getZExtValue() > 1)
+      return;
+
+  SDLoc DL(N);
+  EVT VT = N->getValueType(0);
+  SDValue Ops[] = {N->getOperand(1), N->getOperand(2)};
+  SDNode *WhilePair = CurDAG->getMachineNode(Opc, DL, MVT::Untyped, Ops);
+  SDValue SuperReg = SDValue(WhilePair, 0);
+
+  for (unsigned I = 0; I < 2; ++I)
+    ReplaceUses(SDValue(N, I), CurDAG->getTargetExtractSubreg(
+                                   AArch64::psub0 + I, DL, VT, SuperReg));
+
+  CurDAG->RemoveDeadNode(N);
+}
+
 void AArch64DAGToDAGISel::SelectWhilePair(SDNode *N, unsigned Opc) {
   SDLoc DL(N);
   EVT VT = N->getValueType(0);
@@ -1686,11 +1712,13 @@ void AArch64DAGToDAGISel::SelectCVTIntrinsic(SDNode *N, unsigned NumVecs,
 void AArch64DAGToDAGISel::SelectDestructiveMultiIntrinsic(SDNode *N,
                                                           unsigned NumVecs,
                                                           bool IsZmMulti,
-                                                          unsigned Opcode) {
+                                                          unsigned Opcode,
+                                                          bool HasPred) {
   assert(Opcode != 0 && "Unexpected opcode");
 
   SDLoc DL(N);
   EVT VT = N->getValueType(0);
+  unsigned FirstVecIdx = HasPred ? 2 : 1;
 
   auto GetMultiVecOperand = [=](unsigned StartIdx) {
     SmallVector<SDValue, 4> Regs(N->op_begin() + StartIdx,
@@ -1698,16 +1726,20 @@ void AArch64DAGToDAGISel::SelectDestructiveMultiIntrinsic(SDNode *N,
     return createZMulTuple(Regs);
   };
 
-  SDValue Zdn = GetMultiVecOperand(1);
+  SDValue Zdn = GetMultiVecOperand(FirstVecIdx);
 
   SDValue Zm;
   if (IsZmMulti)
-    Zm = GetMultiVecOperand(NumVecs + 1);
+    Zm = GetMultiVecOperand(NumVecs + FirstVecIdx);
   else
-    Zm = N->getOperand(NumVecs + 1);
+    Zm = N->getOperand(NumVecs + FirstVecIdx);
 
-  SDNode *Intrinsic = CurDAG->getMachineNode(Opcode, DL, MVT::Untyped, Zdn, Zm);
-
+  SDNode *Intrinsic;
+  if (HasPred)
+    Intrinsic = CurDAG->getMachineNode(Opcode, DL, MVT::Untyped,
+                                       N->getOperand(1), Zdn, Zm);
+  else
+    Intrinsic = CurDAG->getMachineNode(Opcode, DL, MVT::Untyped, Zdn, Zm);
   SDValue SuperReg = SDValue(Intrinsic, 0);
   for (unsigned i = 0; i < NumVecs; ++i)
     ReplaceUses(SDValue(N, i), CurDAG->getTargetExtractSubreg(
@@ -1733,6 +1765,41 @@ void AArch64DAGToDAGISel::SelectPredicatedLoad(SDNode *N, unsigned NumVecs,
 
   SDValue Ops[] = {N->getOperand(IsIntr ? 2 : 1), // Predicate
                    Base,                          // Memory operand
+                   Offset, Chain};
+
+  const EVT ResTys[] = {MVT::Untyped, MVT::Other};
+
+  SDNode *Load = CurDAG->getMachineNode(Opc, DL, ResTys, Ops);
+  SDValue SuperReg = SDValue(Load, 0);
+  for (unsigned i = 0; i < NumVecs; ++i)
+    ReplaceUses(SDValue(N, i), CurDAG->getTargetExtractSubreg(
+                                   AArch64::zsub0 + i, DL, VT, SuperReg));
+
+  // Copy chain
+  unsigned ChainIdx = NumVecs;
+  ReplaceUses(SDValue(N, ChainIdx), SDValue(Load, 1));
+  CurDAG->RemoveDeadNode(N);
+}
+
+void AArch64DAGToDAGISel::SelectContiguousMultiVectorLoad(SDNode *N,
+                                                          unsigned NumVecs,
+                                                          unsigned Scale,
+                                                          unsigned Opc_ri,
+                                                          unsigned Opc_rr) {
+  assert(Scale < 4 && "Invalid scaling value.");
+  SDLoc DL(N);
+  EVT VT = N->getValueType(0);
+  SDValue Chain = N->getOperand(0);
+
+  SDValue PNg = N->getOperand(2);
+  SDValue Base = N->getOperand(3);
+  SDValue Offset = CurDAG->getTargetConstant(0, DL, MVT::i64);
+  unsigned Opc;
+  std::tie(Opc, Base, Offset) =
+      findAddrModeSVELoadStore(N, Opc_rr, Opc_ri, Base, Offset, Scale);
+
+  SDValue Ops[] = {PNg,            // Predicate-as-counter
+                   Base,           // Memory operand
                    Offset, Chain};
 
   const EVT ResTys[] = {MVT::Untyped, MVT::Other};
@@ -2399,35 +2466,6 @@ bool AArch64DAGToDAGISel::tryBitfieldExtractOpFromSExt(SDNode *N) {
   SDValue Ops[] = {Opd0, CurDAG->getTargetConstant(Immr, dl, VT),
                    CurDAG->getTargetConstant(Imms, dl, VT)};
   CurDAG->SelectNodeTo(N, AArch64::SBFMXri, VT, Ops);
-  return true;
-}
-
-/// Try to form fcvtl2 instructions from a floating-point extend of a high-half
-/// extract of a subvector.
-bool AArch64DAGToDAGISel::tryHighFPExt(SDNode *N) {
-  assert(N->getOpcode() == ISD::FP_EXTEND);
-
-  // There are 2 forms of fcvtl2 - extend to double or extend to float.
-  SDValue Extract = N->getOperand(0);
-  EVT VT = N->getValueType(0);
-  EVT NarrowVT = Extract.getValueType();
-  if ((VT != MVT::v2f64 || NarrowVT != MVT::v2f32) &&
-      (VT != MVT::v4f32 || NarrowVT != MVT::v4f16))
-    return false;
-
-  // Optionally look past a bitcast.
-  Extract = peekThroughBitcasts(Extract);
-  if (Extract.getOpcode() != ISD::EXTRACT_SUBVECTOR)
-    return false;
-
-  // Match extract from start of high half index.
-  // Example: v8i16 -> v4i16 means the extract must begin at index 4.
-  unsigned ExtractIndex = Extract.getConstantOperandVal(1);
-  if (ExtractIndex != Extract.getValueType().getVectorNumElements())
-    return false;
-
-  auto Opcode = VT == MVT::v2f64 ? AArch64::FCVTLv4i32 : AArch64::FCVTLv8i16;
-  CurDAG->SelectNodeTo(N, Opcode, VT, Extract.getOperand(0));
   return true;
 }
 
@@ -4204,11 +4242,6 @@ void AArch64DAGToDAGISel::Select(SDNode *Node) {
       return;
     break;
 
-  case ISD::FP_EXTEND:
-    if (tryHighFPExt(Node))
-      return;
-    break;
-
   case ISD::OR:
     if (tryBitfieldInsertOp(Node))
       return;
@@ -4621,6 +4654,74 @@ void AArch64DAGToDAGISel::Select(SDNode *Node) {
       } else if (VT == MVT::nxv2i64 || VT == MVT::nxv2f64) {
         SelectPredicatedLoad(Node, 2, 3, AArch64::LD2D_IMM, AArch64::LD2D,
                              true);
+        return;
+      }
+      break;
+    }
+    case Intrinsic::aarch64_sve_ld1_pn_x2: {
+      if (VT == MVT::nxv16i8) {
+        SelectContiguousMultiVectorLoad(Node, 2, 0, AArch64::LD1B_2Z_IMM, AArch64::LD1B_2Z);
+        return;
+      } else if (VT == MVT::nxv8i16 || VT == MVT::nxv8f16 ||
+                 VT == MVT::nxv8bf16) {
+        SelectContiguousMultiVectorLoad(Node, 2, 1, AArch64::LD1H_2Z_IMM, AArch64::LD1H_2Z);
+        return;
+      } else if (VT == MVT::nxv4i32 || VT == MVT::nxv4f32) {
+        SelectContiguousMultiVectorLoad(Node, 2, 2, AArch64::LD1W_2Z_IMM, AArch64::LD1W_2Z);
+        return;
+      } else if (VT == MVT::nxv2i64 || VT == MVT::nxv2f64) {
+        SelectContiguousMultiVectorLoad(Node, 2, 3, AArch64::LD1D_2Z_IMM, AArch64::LD1D_2Z);
+        return;
+      }
+      break;
+    }
+    case Intrinsic::aarch64_sve_ld1_pn_x4: {
+      if (VT == MVT::nxv16i8) {
+        SelectContiguousMultiVectorLoad(Node, 4, 0, AArch64::LD1B_4Z_IMM, AArch64::LD1B_4Z);
+        return;
+      } else if (VT == MVT::nxv8i16 || VT == MVT::nxv8f16 ||
+                 VT == MVT::nxv8bf16) {
+        SelectContiguousMultiVectorLoad(Node, 4, 1, AArch64::LD1H_4Z_IMM, AArch64::LD1H_4Z);
+        return;
+      } else if (VT == MVT::nxv4i32 || VT == MVT::nxv4f32) {
+        SelectContiguousMultiVectorLoad(Node, 4, 2, AArch64::LD1W_4Z_IMM, AArch64::LD1W_4Z);
+        return;
+      } else if (VT == MVT::nxv2i64 || VT == MVT::nxv2f64) {
+        SelectContiguousMultiVectorLoad(Node, 4, 3, AArch64::LD1D_4Z_IMM, AArch64::LD1D_4Z);
+        return;
+      }
+      break;
+    }
+    case Intrinsic::aarch64_sve_ldnt1_pn_x2: {
+      if (VT == MVT::nxv16i8) {
+        SelectContiguousMultiVectorLoad(Node, 2, 0, AArch64::LDNT1B_2Z_IMM, AArch64::LDNT1B_2Z);
+        return;
+      } else if (VT == MVT::nxv8i16 || VT == MVT::nxv8f16 ||
+                 VT == MVT::nxv8bf16) {
+        SelectContiguousMultiVectorLoad(Node, 2, 1, AArch64::LDNT1H_2Z_IMM, AArch64::LDNT1H_2Z);
+        return;
+      } else if (VT == MVT::nxv4i32 || VT == MVT::nxv4f32) {
+        SelectContiguousMultiVectorLoad(Node, 2, 2, AArch64::LDNT1W_2Z_IMM, AArch64::LDNT1W_2Z);
+        return;
+      } else if (VT == MVT::nxv2i64 || VT == MVT::nxv2f64) {
+        SelectContiguousMultiVectorLoad(Node, 2, 3, AArch64::LDNT1D_2Z_IMM, AArch64::LDNT1D_2Z);
+        return;
+      }
+      break;
+    }
+    case Intrinsic::aarch64_sve_ldnt1_pn_x4: {
+      if (VT == MVT::nxv16i8) {
+        SelectContiguousMultiVectorLoad(Node, 4, 0, AArch64::LDNT1B_4Z_IMM, AArch64::LDNT1B_4Z);
+        return;
+      } else if (VT == MVT::nxv8i16 || VT == MVT::nxv8f16 ||
+                 VT == MVT::nxv8bf16) {
+        SelectContiguousMultiVectorLoad(Node, 4, 1, AArch64::LDNT1H_4Z_IMM, AArch64::LDNT1H_4Z);
+        return;
+      } else if (VT == MVT::nxv4i32 || VT == MVT::nxv4f32) {
+        SelectContiguousMultiVectorLoad(Node, 4, 2, AArch64::LDNT1W_4Z_IMM, AArch64::LDNT1W_4Z);
+        return;
+      } else if (VT == MVT::nxv2i64 || VT == MVT::nxv2f64) {
+        SelectContiguousMultiVectorLoad(Node, 4, 3, AArch64::LDNT1D_4Z_IMM, AArch64::LDNT1D_4Z);
         return;
       }
       break;
@@ -5307,6 +5408,20 @@ void AArch64DAGToDAGISel::Select(SDNode *Node) {
       SelectUnaryMultiIntrinsic(Node, 4, /*IsTupleInput=*/true,
                                 AArch64::UZP_VG4_4Z4Z_Q);
       return;
+    case Intrinsic::aarch64_sve_sel_x2:
+      if (auto Op = SelectOpcodeFromVT<SelectTypeKind::AnyType>(
+              Node->getValueType(0),
+              {AArch64::SEL_VG2_2ZC2Z2Z_B, AArch64::SEL_VG2_2ZC2Z2Z_H,
+               AArch64::SEL_VG2_2ZC2Z2Z_S, AArch64::SEL_VG2_2ZC2Z2Z_D}))
+        SelectDestructiveMultiIntrinsic(Node, 2, true, Op, /*HasPred=*/true);
+      return;
+    case Intrinsic::aarch64_sve_sel_x4:
+      if (auto Op = SelectOpcodeFromVT<SelectTypeKind::AnyType>(
+              Node->getValueType(0),
+              {AArch64::SEL_VG4_4ZC4Z4Z_B, AArch64::SEL_VG4_4ZC4Z4Z_H,
+               AArch64::SEL_VG4_4ZC4Z4Z_S, AArch64::SEL_VG4_4ZC4Z4Z_D}))
+        SelectDestructiveMultiIntrinsic(Node, 4, true, Op, /*HasPred=*/true);
+      return;
     case Intrinsic::aarch64_sve_frinta_x2:
       SelectFrintFromVT(Node, 2, AArch64::FRINTA_2Z2Z_S);
       return;
@@ -5359,6 +5474,14 @@ void AArch64DAGToDAGISel::Select(SDNode *Node) {
                AArch64::UUNPK_VG4_4Z2Z_D}))
         SelectUnaryMultiIntrinsic(Node, 4, /*IsTupleInput=*/true, Op);
       return;
+    case Intrinsic::aarch64_sve_pext_x2: {
+      if (auto Op = SelectOpcodeFromVT<SelectTypeKind::AnyType>(
+              Node->getValueType(0),
+              {AArch64::PEXT_2PCI_B, AArch64::PEXT_2PCI_H, AArch64::PEXT_2PCI_S,
+               AArch64::PEXT_2PCI_D}))
+        SelectPExtPair(Node, Op);
+      return;
+    }
     }
     break;
   }

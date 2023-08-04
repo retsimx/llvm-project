@@ -77,9 +77,7 @@ define <4 x i32> @combine_vec_lshr_known_zero1(<4 x i32> %x) {
 ;
 ; AVX-LABEL: combine_vec_lshr_known_zero1:
 ; AVX:       # %bb.0:
-; AVX-NEXT:    vpbroadcastd {{.*#+}} xmm1 = [15,15,15,15]
-; AVX-NEXT:    vpand %xmm1, %xmm0, %xmm0
-; AVX-NEXT:    vpsrlvd {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %xmm0, %xmm0
+; AVX-NEXT:    vxorps %xmm0, %xmm0, %xmm0
 ; AVX-NEXT:    retq
   %1 = and <4 x i32> %x, <i32 15, i32 15, i32 15, i32 15>
   %2 = lshr <4 x i32> %1, <i32 8, i32 9, i32 10, i32 11>
@@ -214,7 +212,8 @@ define <4 x i32> @combine_vec_lshr_trunc_lshr1(<4 x i64> %x) {
 ; AVX2-FAST-ALL-LABEL: combine_vec_lshr_trunc_lshr1:
 ; AVX2-FAST-ALL:       # %bb.0:
 ; AVX2-FAST-ALL-NEXT:    vpsrlvq {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %ymm0, %ymm0
-; AVX2-FAST-ALL-NEXT:    vmovdqa {{.*#+}} ymm1 = <0,2,4,6,u,u,u,u>
+; AVX2-FAST-ALL-NEXT:    vbroadcasti128 {{.*#+}} ymm1 = [0,2,4,6,0,2,4,6]
+; AVX2-FAST-ALL-NEXT:    # ymm1 = mem[0,1,0,1]
 ; AVX2-FAST-ALL-NEXT:    vpermd %ymm0, %ymm1, %ymm0
 ; AVX2-FAST-ALL-NEXT:    vpsrlvd {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %xmm0, %xmm0
 ; AVX2-FAST-ALL-NEXT:    vzeroupper
@@ -259,11 +258,7 @@ define <4 x i32> @combine_vec_lshr_trunc_lshr_zero1(<4 x i64> %x) {
 ;
 ; AVX-LABEL: combine_vec_lshr_trunc_lshr_zero1:
 ; AVX:       # %bb.0:
-; AVX-NEXT:    vpsrlvq {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %ymm0, %ymm0
-; AVX-NEXT:    vextracti128 $1, %ymm0, %xmm1
-; AVX-NEXT:    vpackusdw %xmm1, %xmm0, %xmm0
-; AVX-NEXT:    vpsrlvd {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %xmm0, %xmm0
-; AVX-NEXT:    vzeroupper
+; AVX-NEXT:    vxorps %xmm0, %xmm0, %xmm0
 ; AVX-NEXT:    retq
   %1 = lshr <4 x i64> %x, <i64 48, i64 49, i64 50, i64 51>
   %2 = trunc <4 x i64> %1 to <4 x i32>
@@ -422,7 +417,8 @@ define <4 x i32> @combine_vec_lshr_trunc_and(<4 x i32> %x, <4 x i64> %y) {
 ;
 ; AVX2-FAST-ALL-LABEL: combine_vec_lshr_trunc_and:
 ; AVX2-FAST-ALL:       # %bb.0:
-; AVX2-FAST-ALL-NEXT:    vmovdqa {{.*#+}} ymm2 = <0,2,4,6,u,u,u,u>
+; AVX2-FAST-ALL-NEXT:    vbroadcasti128 {{.*#+}} ymm2 = [0,2,4,6,0,2,4,6]
+; AVX2-FAST-ALL-NEXT:    # ymm2 = mem[0,1,0,1]
 ; AVX2-FAST-ALL-NEXT:    vpermd %ymm1, %ymm2, %ymm1
 ; AVX2-FAST-ALL-NEXT:    vpand {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %xmm1, %xmm1
 ; AVX2-FAST-ALL-NEXT:    vpsrlvd %xmm1, %xmm0, %xmm0

@@ -31,6 +31,8 @@
 #include "llvm/CodeGen/DAGCombine.h"
 #include "llvm/CodeGen/ISDOpcodes.h"
 #include "llvm/CodeGen/LowLevelTypeUtils.h"
+#include "llvm/CodeGen/MachineValueType.h"
+#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/RuntimeLibcalls.h"
 #include "llvm/CodeGen/SelectionDAG.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
@@ -49,7 +51,6 @@
 #include "llvm/Support/AtomicOrdering.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/MachineValueType.h"
 #include <algorithm>
 #include <cassert>
 #include <climits>
@@ -459,6 +460,11 @@ public:
     return true;
   }
 
+  virtual bool shouldExpandGetVectorLength(EVT CountVT, unsigned VF,
+                                           bool IsScalable) const {
+    return true;
+  }
+
   // Return true if op(vecreduce(x), vecreduce(y)) should be reassociated to
   // vecreduce(op(x, y)) for the reduction opcode RedOpc.
   virtual bool shouldReassociateReduction(unsigned RedOpc, EVT VT) const {
@@ -608,13 +614,13 @@ public:
     return isLoadBitCastBeneficial(StoreVT, BitcastVT, DAG, MMO);
   }
 
-  /// Return true if it is expected to be cheaper to do a store of a non-zero
-  /// vector constant with the given size and type for the address space than to
+  /// Return true if it is expected to be cheaper to do a store of vector
+  /// constant with the given size and type for the address space than to
   /// store the individual scalar element constants.
-  virtual bool storeOfVectorConstantIsCheap(EVT MemVT,
+  virtual bool storeOfVectorConstantIsCheap(bool IsZero, EVT MemVT,
                                             unsigned NumElem,
                                             unsigned AddrSpace) const {
-    return false;
+    return IsZero;
   }
 
   /// Allow store merging for the specified type after legalization in addition
@@ -2082,6 +2088,18 @@ public:
     llvm_unreachable("Masked cmpxchg expansion unimplemented on this target");
   }
 
+  //===--------------------------------------------------------------------===//
+  /// \name KCFI check lowering.
+  /// @{
+
+  virtual MachineInstr *EmitKCFICheck(MachineBasicBlock &MBB,
+                                      MachineBasicBlock::instr_iterator &MBBI,
+                                      const TargetInstrInfo *TII) const {
+    llvm_unreachable("KCFI is not supported on this target");
+  }
+
+  /// @}
+
   /// Inserts in the IR a target-specific intrinsic specifying a fence.
   /// It is called by AtomicExpandPass before expanding an
   ///   AtomicRMW/AtomicCmpXchg/AtomicStore/AtomicLoad
@@ -2300,11 +2318,11 @@ public:
   /// considered beneficial.
   /// If optimizing for size, expansion is only considered beneficial for upto
   /// 5 multiplies and a divide (if the exponent is negative).
-  bool isBeneficialToExpandPowI(int Exponent, bool OptForSize) const {
+  bool isBeneficialToExpandPowI(int64_t Exponent, bool OptForSize) const {
     if (Exponent < 0)
       Exponent = -Exponent;
-    return !OptForSize ||
-           (llvm::popcount((unsigned int)Exponent) + Log2_32(Exponent) < 7);
+    uint64_t E = static_cast<uint64_t>(Exponent);
+    return !OptForSize || (llvm::popcount(E) + Log2_64(E) < 7);
   }
 
   //===--------------------------------------------------------------------===//
@@ -2892,8 +2910,9 @@ public:
 
   /// Try to optimize extending or truncating conversion instructions (like
   /// zext, trunc, fptoui, uitofp) for the target.
-  virtual bool optimizeExtendOrTruncateConversion(Instruction *I,
-                                                  Loop *L) const {
+  virtual bool
+  optimizeExtendOrTruncateConversion(Instruction *I, Loop *L,
+                                     const TargetTransformInfo &TTI) const {
     return false;
   }
 
@@ -2952,6 +2971,28 @@ public:
   /// \p Factor is the interleave factor.
   virtual bool lowerInterleavedStore(StoreInst *SI, ShuffleVectorInst *SVI,
                                      unsigned Factor) const {
+    return false;
+  }
+
+  /// Lower a deinterleave intrinsic to a target specific load intrinsic.
+  /// Return true on success. Currently only supports
+  /// llvm.experimental.vector.deinterleave2
+  ///
+  /// \p DI is the deinterleave intrinsic.
+  /// \p LI is the accompanying load instruction
+  virtual bool lowerDeinterleaveIntrinsicToLoad(IntrinsicInst *DI,
+                                                LoadInst *LI) const {
+    return false;
+  }
+
+  /// Lower an interleave intrinsic to a target specific store intrinsic.
+  /// Return true on success. Currently only supports
+  /// llvm.experimental.vector.interleave2
+  ///
+  /// \p II is the interleave intrinsic.
+  /// \p SI is the accompanying store instruction
+  virtual bool lowerInterleaveIntrinsicToStore(IntrinsicInst *II,
+                                               StoreInst *SI) const {
     return false;
   }
 
@@ -3181,7 +3222,7 @@ public:
   /// If one cannot be created using all the given inputs, nullptr should be
   /// returned.
   virtual Value *createComplexDeinterleavingIR(
-      Instruction *I, ComplexDeinterleavingOperation OperationType,
+      IRBuilderBase &B, ComplexDeinterleavingOperation OperationType,
       ComplexDeinterleavingRotation Rotation, Value *InputA, Value *InputB,
       Value *Accumulator = nullptr) const {
     return nullptr;
@@ -3568,6 +3609,17 @@ public:
     return N0.hasOneUse();
   }
 
+  // Lets target to control the following reassociation of operands: (op (op x,
+  // c1), y) -> (op (op x, y), c1) where N0 is (op x, c1) and N1 is y. By
+  // default consider profitable any case where N0 has single use.  This
+  // behavior reflects the condition replaced by this target hook call in the
+  // combiner.  Any particular target can implement its own heuristic to
+  // restrict common combiner.
+  virtual bool isReassocProfitable(MachineRegisterInfo &MRI, Register N0,
+                                   Register N1) const {
+    return MRI.hasOneNonDBGUse(N0);
+  }
+
   virtual bool isSDNodeAlwaysUniform(const SDNode * N) const {
     return false;
   }
@@ -3626,15 +3678,13 @@ public:
   /// legal.  It is frequently not legal in PIC relocation models.
   virtual bool isOffsetFoldingLegal(const GlobalAddressSDNode *GA) const;
 
-  /// Return true if the operand with index OpNo corresponding to a target
-  /// branch, for example, in following case
+  /// On x86, return true if the operand with index OpNo is a CALL or JUMP
+  /// instruction, which can use either a memory constraint or an address
+  /// constraint. -fasm-blocks "__asm call foo" lowers to
+  /// call void asm sideeffect inteldialect "call ${0:P}", "*m..."
   ///
-  /// call void asm "lea r8, $0\0A\09call qword ptr ${1:P}\0A\09ret",
-  ///               "*m,*m,~{r8},~{dirflag},~{fpsr},~{flags}"
-  ///                ([9 x i32]* @Arr), void (...)* @sincos_asm)
-  ///
-  /// the operand $1 (sincos_asm) is target branch in inline asm, but the
-  /// operand $0 (Arr) is not.
+  /// This function is used by a hack to choose the address constraint,
+  /// lowering to a direct call.
   virtual bool
   isInlineAsmTargetBranch(const SmallVectorImpl<StringRef> &AsmStrs,
                           unsigned OpNo) const {
@@ -4035,6 +4085,19 @@ public:
   /// @param Level the current DAGCombine legalization level.
   virtual bool isDesirableToCommuteWithShift(const SDNode *N,
                                              CombineLevel Level) const {
+    return true;
+  }
+
+  /// GlobalISel - return true if it is profitable to move this shift by a
+  /// constant amount through its operand, adjusting any immediate operands as
+  /// necessary to preserve semantics. This transformation may not be desirable
+  /// if it disrupts a particularly auspicious target-specific tree (e.g.
+  /// bitfield extraction in AArch64). By default, it returns true.
+  ///
+  /// @param MI the shift instruction
+  /// @param IsAfterLegal true if running after legalization.
+  virtual bool isDesirableToCommuteWithShift(const MachineInstr &MI,
+                                             bool IsAfterLegal) const {
     return true;
   }
 
@@ -5034,6 +5097,11 @@ public:
   /// \returns The expansion result or SDValue() if it fails.
   SDValue expandABS(SDNode *N, SelectionDAG &DAG,
                     bool IsNegative = false) const;
+
+  /// Expand ABDS/ABDU nodes. Expands vector/scalar ABDS/ABDU nodes.
+  /// \param N Node to expand
+  /// \returns The expansion result or SDValue() if it fails.
+  SDValue expandABD(SDNode *N, SelectionDAG &DAG) const;
 
   /// Expand BSWAP nodes. Expands scalar/vector BSWAP nodes with i16/i32/i64
   /// scalar types. Returns SDValue() if expand fails.

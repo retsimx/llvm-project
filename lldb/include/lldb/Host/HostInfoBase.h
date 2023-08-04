@@ -16,6 +16,7 @@
 #include "lldb/Utility/XcodeSDK.h"
 #include "lldb/lldb-enumerations.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Errc.h"
 
 #include <cstdint>
 
@@ -127,12 +128,18 @@ public:
   static FileSpec GetXcodeDeveloperDirectory() { return {}; }
 
   struct SDKOptions {
-    std::optional<XcodeSDK> XcodeSDK;
+    std::optional<XcodeSDK> XcodeSDKSelection;
   };
 
   /// Return the directory containing something like a SDK (reused for Swift).
   static llvm::Expected<llvm::StringRef> GetSDKRoot(SDKOptions options) {
     return llvm::make_error<HostInfoError>("cannot determine SDK root");
+  }
+
+  /// Return the path to a specific tool in the specified Xcode SDK.
+  static llvm::Expected<llvm::StringRef> FindSDKTool(XcodeSDK sdk,
+                                                     llvm::StringRef tool) {
+    return llvm::errorCodeToError(llvm::errc::no_such_file_or_directory);
   }
 
   /// Return information about module \p image_name if it is loaded in
@@ -141,6 +148,14 @@ public:
   GetSharedCacheImageInfo(llvm::StringRef image_name) {
     return {};
   }
+
+  /// Returns the distribution id of the host
+  ///
+  /// This will be something like "ubuntu", "fedora", etc. on Linux.
+  ///
+  /// \return Returns either std::nullopt or a reference to a const std::string
+  /// containing the distribution id
+  static llvm::StringRef GetDistributionId() { return llvm::StringRef(); }
 
 protected:
   static bool ComputeSharedLibraryDirectory(FileSpec &file_spec);

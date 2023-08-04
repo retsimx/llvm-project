@@ -271,7 +271,7 @@ struct LinalgOpPartialReductionInterface
       return op->emitOpError("Failed to anaysis the reduction operation.");
 
     Operation *reductionOp = combinerOps[0];
-    std::optional<TypedAttr> identity = getNeutralElement(reductionOp);
+    std::optional<TypedAttr> identity = arith::getNeutralElement(reductionOp);
     if (!identity.has_value())
       return op->emitOpError(
           "Failed to get an identity value for the reduction operation.");
@@ -291,7 +291,7 @@ struct LinalgOpPartialReductionInterface
       int64_t dim = oldShape[oldIdx];
       newOutputShape.push_back(dim);
       if (ShapedType::isDynamic(dim))
-        dynamicDims.push_back(b.createOrFold<tensor::DimOp>(
+        dynamicDims.push_back(b.create<tensor::DimOp>(
             loc, linalgOp.getDpsInitOperand(0)->get(), oldIdx));
     }
     Value emptyTensor = b.create<tensor::EmptyOp>(
@@ -365,8 +365,7 @@ struct LinalgOpPartialReductionInterface
 
     // Then create a new reduction that only reduce the newly added dimension
     // from the previous op.
-    int64_t intermRank =
-        partialReduce[0].getType().cast<ShapedType>().getRank();
+    int64_t intermRank = cast<ShapedType>(partialReduce[0].getType()).getRank();
     AffineMap inputMap = b.getMultiDimIdentityMap(intermRank);
     SmallVector<utils::IteratorType> reductionIteratorTypes;
     SmallVector<AffineExpr> exprs;

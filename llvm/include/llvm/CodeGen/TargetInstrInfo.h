@@ -1005,6 +1005,10 @@ public:
     return false;
   }
 
+  /// Return an index for MachineJumpTableInfo if \p insn is an indirect jump
+  /// using a jump table, otherwise -1.
+  virtual int getJumpTableIndex(const MachineInstr &MI) const { return -1; }
+
 protected:
   /// Target-dependent implementation for IsCopyInstr.
   /// If the specific machine instruction is a instruction that moves/copies
@@ -1038,6 +1042,16 @@ public:
       return DestSourcePair{MI.getOperand(0), MI.getOperand(1)};
     }
     return isCopyInstrImpl(MI);
+  }
+
+  bool isFullCopyInstr(const MachineInstr &MI) const {
+    auto DestSrc = isCopyInstr(MI);
+    if (!DestSrc)
+      return false;
+
+    const MachineOperand *DestRegOp = DestSrc->Destination;
+    const MachineOperand *SrcRegOp = DestSrc->Source;
+    return !DestRegOp->getSubReg() && !SrcRegOp->getSubReg();
   }
 
   /// If the specific machine instruction is an instruction that adds an
@@ -1145,6 +1159,10 @@ public:
   MachineInstr *foldMemoryOperand(MachineInstr &MI, ArrayRef<unsigned> Ops,
                                   MachineInstr &LoadMI,
                                   LiveIntervals *LIS = nullptr) const;
+
+  /// This function defines the logic to lower COPY instruction to
+  /// target specific instruction(s).
+  void lowerCopy(MachineInstr *MI, const TargetRegisterInfo *TRI) const;
 
   /// Return true when there is potentially a faster code sequence
   /// for an instruction chain ending in \p Root. All potential patterns are
@@ -1950,6 +1968,13 @@ public:
     return false;
   }
 
+  /// Allows targets to use appropriate copy instruction while spilitting live
+  /// range of a register in register allocation.
+  virtual unsigned getLiveRangeSplitOpcode(Register Reg,
+                                           const MachineFunction &MF) const {
+    return TargetOpcode::COPY;
+  }
+
   /// During PHI eleimination lets target to make necessary checks and
   /// insert the copy to the PHI destination register in a target specific
   /// manner.
@@ -2106,6 +2131,9 @@ public:
                                         int64_t &Offset) const {
     return false;
   }
+
+  // Get the call frame size just before MI.
+  unsigned getCallFrameSizeAt(MachineInstr &MI) const;
 
 private:
   mutable std::unique_ptr<MIRFormatter> Formatter;

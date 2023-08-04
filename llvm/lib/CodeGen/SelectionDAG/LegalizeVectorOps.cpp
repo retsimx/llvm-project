@@ -29,6 +29,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/ISDOpcodes.h"
+#include "llvm/CodeGen/MachineValueType.h"
 #include "llvm/CodeGen/SelectionDAG.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
 #include "llvm/CodeGen/TargetLowering.h"
@@ -38,7 +39,6 @@
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/MachineValueType.h"
 #include <cassert>
 #include <cstdint>
 #include <iterator>
@@ -302,8 +302,7 @@ SDValue VectorLegalizer::LegalizeOp(SDValue Op) {
       ISD::CondCode CCCode = cast<CondCodeSDNode>(Node->getOperand(3))->get();
       Action = TLI.getCondCodeAction(CCCode, OpVT);
       if (Action == TargetLowering::Legal)
-        Action =
-            TLI.getOperationAction(Node->getOpcode(), Node->getValueType(0));
+        Action = TLI.getOperationAction(Node->getOpcode(), OpVT);
     } else {
       Action = TLI.getOperationAction(Node->getOpcode(), ValVT);
     }
@@ -378,6 +377,7 @@ SDValue VectorLegalizer::LegalizeOp(SDValue Op) {
   case ISD::FSQRT:
   case ISD::FSIN:
   case ISD::FCOS:
+  case ISD::FLDEXP:
   case ISD::FPOWI:
   case ISD::FPOW:
   case ISD::FLOG:
@@ -412,6 +412,7 @@ SDValue VectorLegalizer::LegalizeOp(SDValue Op) {
   case ISD::SMULO:
   case ISD::UMULO:
   case ISD::FCANONICALIZE:
+  case ISD::FFREXP:
   case ISD::SADDSAT:
   case ISD::UADDSAT:
   case ISD::SSUBSAT:
@@ -451,6 +452,8 @@ SDValue VectorLegalizer::LegalizeOp(SDValue Op) {
   case ISD::VECREDUCE_FMUL:
   case ISD::VECREDUCE_FMAX:
   case ISD::VECREDUCE_FMIN:
+  case ISD::VECREDUCE_FMAXIMUM:
+  case ISD::VECREDUCE_FMINIMUM:
     Action = TLI.getOperationAction(Node->getOpcode(),
                                     Node->getOperand(0).getValueType());
     break;
@@ -464,7 +467,7 @@ SDValue VectorLegalizer::LegalizeOp(SDValue Op) {
     ISD::CondCode CCCode = cast<CondCodeSDNode>(Node->getOperand(2))->get();
     Action = TLI.getCondCodeAction(CCCode, OpVT);
     if (Action == TargetLowering::Legal)
-      Action = TLI.getOperationAction(Node->getOpcode(), Node->getValueType(0));
+      Action = TLI.getOperationAction(Node->getOpcode(), OpVT);
     break;
   }
 
@@ -795,6 +798,13 @@ void VectorLegalizer::Expand(SDNode *Node, SmallVectorImpl<SDValue> &Results) {
       return;
     }
     break;
+  case ISD::ABDS:
+  case ISD::ABDU:
+    if (SDValue Expanded = TLI.expandABD(Node, DAG)) {
+      Results.push_back(Expanded);
+      return;
+    }
+    break;
   case ISD::BITREVERSE:
     ExpandBITREVERSE(Node, Results);
     return;
@@ -953,6 +963,8 @@ void VectorLegalizer::Expand(SDNode *Node, SmallVectorImpl<SDValue> &Results) {
   case ISD::VECREDUCE_FMUL:
   case ISD::VECREDUCE_FMAX:
   case ISD::VECREDUCE_FMIN:
+  case ISD::VECREDUCE_FMAXIMUM:
+  case ISD::VECREDUCE_FMINIMUM:
     Results.push_back(TLI.expandVecReduce(Node, DAG));
     return;
   case ISD::VECREDUCE_SEQ_FADD:
@@ -968,7 +980,9 @@ void VectorLegalizer::Expand(SDNode *Node, SmallVectorImpl<SDValue> &Results) {
     return;
   }
 
-  Results.push_back(DAG.UnrollVectorOp(Node));
+  SDValue Unrolled = DAG.UnrollVectorOp(Node);
+  for (unsigned I = 0, E = Unrolled->getNumValues(); I != E; ++I)
+    Results.push_back(Unrolled.getValue(I));
 }
 
 SDValue VectorLegalizer::ExpandSELECT(SDNode *Node) {

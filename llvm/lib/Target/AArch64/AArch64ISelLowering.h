@@ -165,9 +165,6 @@ enum NodeType : unsigned {
   // Floating point comparison
   FCMP,
 
-  // Scalar extract
-  EXTR,
-
   // Scalar-to-vector duplication
   DUP,
   DUPLANE8,
@@ -535,6 +532,11 @@ public:
                                      const SelectionDAG &DAG,
                                      unsigned Depth = 0) const override;
 
+  unsigned ComputeNumSignBitsForTargetNode(SDValue Op,
+                                           const APInt &DemandedElts,
+                                           const SelectionDAG &DAG,
+                                           unsigned Depth) const override;
+
   MVT getPointerTy(const DataLayout &DL, uint32_t AS = 0) const override {
     // Returning i64 unconditionally here (i.e. even for ILP32) means that the
     // *DAG* representation of pointers will always be 64-bits. They will be
@@ -632,8 +634,8 @@ public:
   bool shouldSinkOperands(Instruction *I,
                           SmallVectorImpl<Use *> &Ops) const override;
 
-  bool optimizeExtendOrTruncateConversion(Instruction *I,
-                                          Loop *L) const override;
+  bool optimizeExtendOrTruncateConversion(
+      Instruction *I, Loop *L, const TargetTransformInfo &TTI) const override;
 
   bool hasPairedLoad(EVT LoadedType, Align &RequiredAligment) const override;
 
@@ -645,6 +647,12 @@ public:
                             unsigned Factor) const override;
   bool lowerInterleavedStore(StoreInst *SI, ShuffleVectorInst *SVI,
                              unsigned Factor) const override;
+
+  bool lowerDeinterleaveIntrinsicToLoad(IntrinsicInst *DI,
+                                        LoadInst *LI) const override;
+
+  bool lowerInterleaveIntrinsicToStore(IntrinsicInst *II,
+                                       StoreInst *SI) const override;
 
   bool isLegalAddImmediate(int64_t) const override;
   bool isLegalICmpImmediate(int64_t) const override;
@@ -689,6 +697,9 @@ public:
   /// Return true if it is profitable to fold a pair of shifts into a mask.
   bool shouldFoldConstantShiftPairToMask(const SDNode *N,
                                          CombineLevel Level) const override;
+
+  bool shouldFoldSelectWithIdentityConstant(unsigned BinOpcode,
+                                            EVT VT) const override;
 
   /// Returns true if it is beneficial to convert a load of a constant
   /// to just the constant itself.
@@ -838,7 +849,7 @@ public:
       ComplexDeinterleavingOperation Operation, Type *Ty) const override;
 
   Value *createComplexDeinterleavingIR(
-      Instruction *I, ComplexDeinterleavingOperation OperationType,
+      IRBuilderBase &B, ComplexDeinterleavingOperation OperationType,
       ComplexDeinterleavingRotation Rotation, Value *InputA, Value *InputB,
       Value *Accumulator = nullptr) const override;
 
@@ -856,6 +867,10 @@ public:
   }
 
   bool supportKCFIBundles() const override { return true; }
+
+  MachineInstr *EmitKCFICheck(MachineBasicBlock &MBB,
+                              MachineBasicBlock::instr_iterator &MBBI,
+                              const TargetInstrInfo *TII) const override;
 
   /// Enable aggressive FMA fusion on targets that want it.
   bool enableAggressiveFMAFusion(EVT VT) const override;
@@ -1044,7 +1059,6 @@ private:
   SDValue LowerSET_ROUNDING(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerINSERT_VECTOR_ELT(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerEXTRACT_VECTOR_ELT(SDValue Op, SelectionDAG &DAG) const;
-  SDValue LowerSCALAR_TO_VECTOR(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerBUILD_VECTOR(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerZERO_EXTEND_VECTOR_INREG(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerVECTOR_SHUFFLE(SDValue Op, SelectionDAG &DAG) const;

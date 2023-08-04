@@ -513,19 +513,40 @@ void LookupResult::resolveKind() {
   const NamedDecl *HasNonFunction = nullptr;
 
   llvm::SmallVector<const NamedDecl *, 4> EquivalentNonFunctions;
+  llvm::BitVector RemovedDecls(N);
 
-  unsigned UniqueTagIndex = 0;
-
-  unsigned I = 0;
-  while (I < N) {
+  for (unsigned I = 0; I < N; I++) {
     const NamedDecl *D = Decls[I]->getUnderlyingDecl();
     D = cast<NamedDecl>(D->getCanonicalDecl());
 
     // Ignore an invalid declaration unless it's the only one left.
     // Also ignore HLSLBufferDecl which not have name conflict with other Decls.
-    if ((D->isInvalidDecl() || isa<HLSLBufferDecl>(D)) && !(I == 0 && N == 1)) {
-      Decls[I] = Decls[--N];
+    if ((D->isInvalidDecl() || isa<HLSLBufferDecl>(D)) &&
+        N - RemovedDecls.count() > 1) {
+      RemovedDecls.set(I);
       continue;
+    }
+
+    // C++ [basic.scope.hiding]p2:
+    //   A class name or enumeration name can be hidden by the name of
+    //   an object, function, or enumerator declared in the same
+    //   scope. If a class or enumeration name and an object, function,
+    //   or enumerator are declared in the same scope (in any order)
+    //   with the same name, the class or enumeration name is hidden
+    //   wherever the object, function, or enumerator name is visible.
+    if (HideTags && isa<TagDecl>(D)) {
+      bool Hidden = false;
+      for (auto *OtherDecl : Decls) {
+        if (canHideTag(OtherDecl) &&
+            getContextForScopeMatching(OtherDecl)->Equals(
+                getContextForScopeMatching(Decls[I]))) {
+          RemovedDecls.set(I);
+          Hidden = true;
+          break;
+        }
+      }
+      if (Hidden)
+        continue;
     }
 
     std::optional<unsigned> ExistingI;
@@ -560,7 +581,7 @@ void LookupResult::resolveKind() {
       if (isPreferredLookupResult(getSema(), getLookupKind(), Decls[I],
                                   Decls[*ExistingI]))
         Decls[*ExistingI] = Decls[I];
-      Decls[I] = Decls[--N];
+      RemovedDecls.set(I);
       continue;
     }
 
@@ -571,7 +592,6 @@ void LookupResult::resolveKind() {
     } else if (isa<TagDecl>(D)) {
       if (HasTag)
         Ambiguous = true;
-      UniqueTagIndex = I;
       HasTag = true;
     } else if (isa<FunctionTemplateDecl>(D)) {
       HasFunction = true;
@@ -587,7 +607,7 @@ void LookupResult::resolveKind() {
         if (getSema().isEquivalentInternalLinkageDeclaration(HasNonFunction,
                                                              D)) {
           EquivalentNonFunctions.push_back(D);
-          Decls[I] = Decls[--N];
+          RemovedDecls.set(I);
           continue;
         }
 
@@ -595,28 +615,6 @@ void LookupResult::resolveKind() {
       }
       HasNonFunction = D;
     }
-    I++;
-  }
-
-  // C++ [basic.scope.hiding]p2:
-  //   A class name or enumeration name can be hidden by the name of
-  //   an object, function, or enumerator declared in the same
-  //   scope. If a class or enumeration name and an object, function,
-  //   or enumerator are declared in the same scope (in any order)
-  //   with the same name, the class or enumeration name is hidden
-  //   wherever the object, function, or enumerator name is visible.
-  // But it's still an error if there are distinct tag types found,
-  // even if they're not visible. (ref?)
-  if (N > 1 && HideTags && HasTag && !Ambiguous &&
-      (HasFunction || HasNonFunction || HasUnresolved)) {
-    const NamedDecl *OtherDecl = Decls[UniqueTagIndex ? 0 : N - 1];
-    if (isa<TagDecl>(Decls[UniqueTagIndex]->getUnderlyingDecl()) &&
-        getContextForScopeMatching(Decls[UniqueTagIndex])->Equals(
-            getContextForScopeMatching(OtherDecl)) &&
-        canHideTag(OtherDecl))
-      Decls[UniqueTagIndex] = Decls[--N];
-    else
-      Ambiguous = true;
   }
 
   // FIXME: This diagnostic should really be delayed until we're done with
@@ -625,9 +623,15 @@ void LookupResult::resolveKind() {
     getSema().diagnoseEquivalentInternalLinkageDeclarations(
         getNameLoc(), HasNonFunction, EquivalentNonFunctions);
 
+  // Remove decls by replacing them with decls from the end (which
+  // means that we need to iterate from the end) and then truncating
+  // to the new size.
+  for (int I = RemovedDecls.find_last(); I >= 0; I = RemovedDecls.find_prev(I))
+    Decls[I] = Decls[--N];
   Decls.truncate(N);
 
-  if (HasNonFunction && (HasFunction || HasUnresolved))
+  if ((HasNonFunction && (HasFunction || HasUnresolved)) ||
+      (HideTags && HasTag && (HasFunction || HasNonFunction || HasUnresolved)))
     Ambiguous = true;
 
   if (Ambiguous)
@@ -933,9 +937,11 @@ bool Sema::LookupBuiltin(LookupResult &R) {
         }
       }
 
-      if (DeclareRISCVVBuiltins) {
+      if (DeclareRISCVVBuiltins || DeclareRISCVSiFiveVectorBuiltins) {
         if (!RVIntrinsicManager)
           RVIntrinsicManager = CreateRISCVIntrinsicManager(*this);
+
+        RVIntrinsicManager->InitIntrinsicList();
 
         if (RVIntrinsicManager->CreateIntrinsicIfFound(R, II, PP))
           return true;
@@ -1877,14 +1883,14 @@ bool Sema::isModuleVisible(const Module *M, bool ModulePrivate) {
   if (LookupModules.empty())
     return false;
 
+  // If our lookup set contains the module, it's visible.
+  if (LookupModules.count(M))
+    return true;
+
   // The global module fragments are visible to its corresponding module unit.
   // So the global module fragment should be visible if the its corresponding
   // module unit is visible.
-  if (M->isGlobalModule())
-    M = M->getTopLevelModule();
-
-  // If our lookup set contains the module, it's visible.
-  if (LookupModules.count(M))
+  if (M->isGlobalModule() && LookupModules.count(M->getTopLevelModule()))
     return true;
 
   // For a module-private query, that's everywhere we get to look.
@@ -1905,14 +1911,11 @@ bool LookupResult::isReachableSlow(Sema &SemaRef, NamedDecl *D) {
   Module *DeclModule = SemaRef.getOwningModule(D);
   assert(DeclModule && "hidden decl has no owning module");
 
-  // Entities in module map modules are reachable only if they're visible.
-  if (DeclModule->isModuleMapModule())
+  // Entities in header like modules are reachable only if they're visible.
+  if (DeclModule->isHeaderLikeModule())
     return false;
 
-  // If D comes from a module and SemaRef doesn't own a module, it implies D
-  // comes from another TU. In case SemaRef owns a module, we could judge if D
-  // comes from another TU by comparing the module unit.
-  if (SemaRef.isModuleUnitOfCurrentTU(DeclModule))
+  if (!D->isInAnotherModuleUnit())
     return true;
 
   // [module.reach]/p3:
@@ -2427,8 +2430,9 @@ bool Sema::LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
     bool oldVal;
     DeclContext *Context;
     // Set flag in DeclContext informing debugger that we're looking for qualified name
-    QualifiedLookupInScope(DeclContext *ctx) : Context(ctx) {
-      oldVal = ctx->setUseQualifiedLookup();
+    QualifiedLookupInScope(DeclContext *ctx)
+        : oldVal(ctx->shouldUseQualifiedLookup()), Context(ctx) {
+      ctx->setUseQualifiedLookup();
     }
     ~QualifiedLookupInScope() {
       Context->setUseQualifiedLookup(oldVal);
@@ -3892,14 +3896,12 @@ void Sema::ArgumentDependentLookup(DeclarationName Name, SourceLocation Loc,
                    "bad export context");
             // .. are attached to a named module M, do not appear in the
             // translation unit containing the point of the lookup..
-            if (!isModuleUnitOfCurrentTU(FM) &&
+            if (D->isInAnotherModuleUnit() &&
                 llvm::any_of(AssociatedClasses, [&](auto *E) {
                   // ... and have the same innermost enclosing non-inline
                   // namespace scope as a declaration of an associated entity
                   // attached to M
-                  if (!E->hasOwningModule() ||
-                      E->getOwningModule()->getTopLevelModuleName() !=
-                          FM->getTopLevelModuleName())
+                  if (E->getOwningModule() != FM)
                     return false;
                   // TODO: maybe this could be cached when generating the
                   // associated namespaces / entities.
@@ -4153,22 +4155,21 @@ private:
     // Enumerate all of the results in this context.
     for (DeclContextLookupResult R :
          Load ? Ctx->lookups()
-              : Ctx->noload_lookups(/*PreserveInternalState=*/false)) {
-      for (auto *D : R) {
-        if (auto *ND = Result.getAcceptableDecl(D)) {
-          // Rather than visit immediately, we put ND into a vector and visit
-          // all decls, in order, outside of this loop. The reason is that
-          // Consumer.FoundDecl() may invalidate the iterators used in the two
-          // loops above.
-          DeclsToVisit.push_back(ND);
-        }
-      }
-    }
+              : Ctx->noload_lookups(/*PreserveInternalState=*/false))
+      for (auto *D : R)
+        // Rather than visit immediately, we put ND into a vector and visit
+        // all decls, in order, outside of this loop. The reason is that
+        // Consumer.FoundDecl() and LookupResult::getAcceptableDecl(D)
+        // may invalidate the iterators used in the two
+        // loops above.
+        DeclsToVisit.push_back(D);
 
-    for (auto *ND : DeclsToVisit) {
-      Consumer.FoundDecl(ND, Visited.checkHidden(ND), Ctx, InBaseClass);
-      Visited.add(ND);
-    }
+    for (auto *D : DeclsToVisit)
+      if (auto *ND = Result.getAcceptableDecl(D)) {
+        Consumer.FoundDecl(ND, Visited.checkHidden(ND), Ctx, InBaseClass);
+        Visited.add(ND);
+      }
+
     DeclsToVisit.clear();
 
     // Traverse using directives for qualified name lookup.

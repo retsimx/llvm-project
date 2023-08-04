@@ -35,7 +35,6 @@ struct VPlanTransforms {
   VPInstructionsToVPRecipes(VPlanPtr &Plan,
                             function_ref<const InductionDescriptor *(PHINode *)>
                                 GetIntOrFpInductionDescriptor,
-                            SmallPtrSetImpl<Instruction *> &DeadInstructions,
                             ScalarEvolution &SE, const TargetLibraryInfo &TLI);
 
   /// Wrap predicated VPReplicateRecipes with a mask operand in an if-then
@@ -81,6 +80,9 @@ struct VPlanTransforms {
   /// as needed or false if it is not possible. In the latter case, \p Plan is
   /// not valid.
   static bool adjustFixedOrderRecurrences(VPlan &Plan, VPBuilder &Builder);
+
+  /// Clear NSW/NUW flags from reduction instructions if necessary.
+  static void clearReductionWrapFlags(VPlan &Plan);
 
   /// Optimize \p Plan based on \p BestVF and \p BestUF. This may restrict the
   /// resulting plan to \p BestVF and \p BestUF.

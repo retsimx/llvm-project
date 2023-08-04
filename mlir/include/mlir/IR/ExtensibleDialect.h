@@ -24,8 +24,11 @@
 #include "mlir/IR/DialectInterface.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OpDefinition.h"
+#include "mlir/IR/OperationSupport.h"
 #include "mlir/Support/TypeID.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/Support/ErrorHandling.h"
+#include <optional>
 
 namespace mlir {
 class AsmParser;
@@ -461,6 +464,37 @@ public:
   LogicalResult verifyRegionInvariants(Operation *op) final {
     return verifyRegionFn(op);
   }
+
+  /// Implementation for properties (unsupported right now here).
+  std::optional<Attribute> getInherentAttr(Operation *op,
+                                           StringRef name) final {
+    llvm::report_fatal_error("Unsupported getInherentAttr on Dynamic dialects");
+  }
+  void setInherentAttr(Operation *op, StringAttr name, Attribute value) final {
+    llvm::report_fatal_error("Unsupported setInherentAttr on Dynamic dialects");
+  }
+  void populateInherentAttrs(Operation *op, NamedAttrList &attrs) final {}
+  LogicalResult
+  verifyInherentAttrs(OperationName opName, NamedAttrList &attributes,
+                      function_ref<InFlightDiagnostic()> getDiag) final {
+    return success();
+  }
+  int getOpPropertyByteSize() final { return 0; }
+  void initProperties(OperationName opName, OpaqueProperties storage,
+                      OpaqueProperties init) final {}
+  void deleteProperties(OpaqueProperties prop) final {}
+  void populateDefaultProperties(OperationName opName,
+                                 OpaqueProperties properties) final {}
+
+  LogicalResult setPropertiesFromAttr(OperationName opName,
+                                      OpaqueProperties properties,
+                                      Attribute attr,
+                                      InFlightDiagnostic *diag) final {
+    return failure();
+  }
+  Attribute getPropertiesAsAttr(Operation *op) final { return {}; }
+  void copyProperties(OpaqueProperties lhs, OpaqueProperties rhs) final {}
+  llvm::hash_code hashProperties(OpaqueProperties prop) final { return {}; }
 
 private:
   DynamicOpDefinition(

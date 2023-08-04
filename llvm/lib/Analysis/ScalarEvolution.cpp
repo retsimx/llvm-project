@@ -71,6 +71,7 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/ConstantFolding.h"
@@ -135,10 +136,10 @@ using namespace PatternMatch;
 
 #define DEBUG_TYPE "scalar-evolution"
 
-STATISTIC(NumTripCountsComputed,
-          "Number of loops with predictable loop counts");
-STATISTIC(NumTripCountsNotComputed,
-          "Number of loops without predictable loop counts");
+STATISTIC(NumExitCountsComputed,
+          "Number of loop exits with predictable exit counts");
+STATISTIC(NumExitCountsNotComputed,
+          "Number of loop exits without predictable exit counts");
 STATISTIC(NumBruteForceTripCountsComputed,
           "Number of loops with trip counts computed by force");
 
@@ -161,10 +162,6 @@ static cl::opt<bool, true> VerifySCEVOpt(
 static cl::opt<bool> VerifySCEVStrict(
     "verify-scev-strict", cl::Hidden,
     cl::desc("Enable stricter verification with -verify-scev is passed"));
-static cl::opt<bool>
-    VerifySCEVMap("verify-scev-maps", cl::Hidden,
-                  cl::desc("Verify no dangling value in ScalarEvolution's "
-                           "ExprValueMap (slow)"));
 
 static cl::opt<bool> VerifyIR(
     "scev-verify-ir", cl::Hidden,
@@ -655,7 +652,7 @@ CompareValueComplexity(EquivalenceClasses<const Value *> &EqCacheValue,
     if (LNumOps != RNumOps)
       return (int)LNumOps - (int)RNumOps;
 
-    for (unsigned Idx : seq(0u, LNumOps)) {
+    for (unsigned Idx : seq(LNumOps)) {
       int Result =
           CompareValueComplexity(EqCacheValue, LI, LInst->getOperand(Idx),
                                  RInst->getOperand(Idx), Depth + 1);
@@ -1554,10 +1551,7 @@ ScalarEvolution::getZeroExtendExpr(const SCEV *Op, Type *Ty, unsigned Depth) {
   assert(!Op->getType()->isPointerTy() && "Can't extend pointer!");
   Ty = getEffectiveSCEVType(Ty);
 
-  FoldID ID;
-  ID.addInteger(scZeroExtend);
-  ID.addPointer(Op);
-  ID.addPointer(Ty);
+  FoldID ID(scZeroExtend, Op, Ty);
   auto Iter = FoldCache.find(ID);
   if (Iter != FoldCache.end())
     return Iter->second;
@@ -1721,9 +1715,9 @@ const SCEV *ScalarEvolution::getZeroExtendExprImpl(const SCEV *Op, Type *Ty,
           Step = getZeroExtendExpr(Step, Ty, Depth + 1);
           return getAddRecExpr(Start, Step, L, AR->getNoWrapFlags());
         }
-        
+
         // For a negative step, we can extend the operands iff doing so only
-        // traverses values in the range zext([0,UINT_MAX]). 
+        // traverses values in the range zext([0,UINT_MAX]).
         if (isKnownNegative(Step)) {
           const SCEV *N = getConstant(APInt::getMaxValue(BitWidth) -
                                       getSignedRangeMin(Step));
@@ -1893,10 +1887,7 @@ ScalarEvolution::getSignExtendExpr(const SCEV *Op, Type *Ty, unsigned Depth) {
   assert(!Op->getType()->isPointerTy() && "Can't extend pointer!");
   Ty = getEffectiveSCEVType(Ty);
 
-  FoldID ID;
-  ID.addInteger(scSignExtend);
-  ID.addPointer(Op);
-  ID.addPointer(Ty);
+  FoldID ID(scSignExtend, Op, Ty);
   auto Iter = FoldCache.find(ID);
   if (Iter != FoldCache.end())
     return Iter->second;
@@ -3265,9 +3256,8 @@ const SCEV *ScalarEvolution::getMulExpr(SmallVectorImpl<const SCEV *> &Ops,
     // if they are loop invariant w.r.t. the recurrence.
     SmallVector<const SCEV *, 8> LIOps;
     const SCEVAddRecExpr *AddRec = cast<SCEVAddRecExpr>(Ops[Idx]);
-    const Loop *AddRecLoop = AddRec->getLoop();
     for (unsigned i = 0, e = Ops.size(); i != e; ++i)
-      if (isAvailableAtLoopEntry(Ops[i], AddRecLoop)) {
+      if (isAvailableAtLoopEntry(Ops[i], AddRec->getLoop())) {
         LIOps.push_back(Ops[i]);
         Ops.erase(Ops.begin()+i);
         --i; --e;
@@ -3290,7 +3280,7 @@ const SCEV *ScalarEvolution::getMulExpr(SmallVectorImpl<const SCEV *> &Ops,
       // will be inferred if either NUW or NSW is true.
       SCEV::NoWrapFlags Flags = ComputeFlags({Scale, AddRec});
       const SCEV *NewRec = getAddRecExpr(
-          NewOps, AddRecLoop, AddRec->getNoWrapFlags(Flags));
+          NewOps, AddRec->getLoop(), AddRec->getNoWrapFlags(Flags));
 
       // If all of the other operands were loop invariant, we are done.
       if (Ops.size() == 1) return NewRec;
@@ -3324,7 +3314,7 @@ const SCEV *ScalarEvolution::getMulExpr(SmallVectorImpl<const SCEV *> &Ops,
          ++OtherIdx) {
       const SCEVAddRecExpr *OtherAddRec =
         dyn_cast<SCEVAddRecExpr>(Ops[OtherIdx]);
-      if (!OtherAddRec || OtherAddRec->getLoop() != AddRecLoop)
+      if (!OtherAddRec || OtherAddRec->getLoop() != AddRec->getLoop())
         continue;
 
       // Limit max number of arguments to avoid creation of unreasonably big
@@ -3363,7 +3353,7 @@ const SCEV *ScalarEvolution::getMulExpr(SmallVectorImpl<const SCEV *> &Ops,
         AddRecOps.push_back(getAddExpr(SumOps, SCEV::FlagAnyWrap, Depth + 1));
       }
       if (!Overflow) {
-        const SCEV *NewAddRec = getAddRecExpr(AddRecOps, AddRecLoop,
+        const SCEV *NewAddRec = getAddRecExpr(AddRecOps, AddRec->getLoop(),
                                               SCEV::FlagAnyWrap);
         if (Ops.size() == 2) return NewAddRec;
         Ops[Idx] = NewAddRec;
@@ -4345,8 +4335,10 @@ const SCEV *ScalarEvolution::getOffsetOfExpr(Type *IntTy,
   // We can bypass creating a target-independent constant expression and then
   // folding it back into a ConstantInt. This is just a compile-time
   // optimization.
-  return getConstant(
-      IntTy, getDataLayout().getStructLayout(STy)->getElementOffset(FieldNo));
+  const StructLayout *SL = getDataLayout().getStructLayout(STy);
+  assert(!SL->getSizeInBits().isScalable() &&
+         "Cannot get offset for structure containing scalable vector types");
+  return getConstant(IntTy, SL->getElementOffset(FieldNo));
 }
 
 const SCEV *ScalarEvolution::getUnknown(Value *V) {
@@ -4411,8 +4403,8 @@ Type *ScalarEvolution::getWiderType(Type *T1, Type *T2) const {
   return  getTypeSizeInBits(T1) >= getTypeSizeInBits(T2) ? T1 : T2;
 }
 
-bool ScalarEvolution::instructionCouldExistWitthOperands(const SCEV *A,
-                                                         const SCEV *B) {
+bool ScalarEvolution::instructionCouldExistWithOperands(const SCEV *A,
+                                                        const SCEV *B) {
   /// For a valid use point to exist, the defining scope of one operand
   /// must dominate the other.
   bool PreciseA, PreciseB;
@@ -4424,7 +4416,6 @@ bool ScalarEvolution::instructionCouldExistWitthOperands(const SCEV *A,
   return (ScopeA == ScopeB) || DT.dominates(ScopeA, ScopeB) ||
     DT.dominates(ScopeB, ScopeA);
 }
-
 
 const SCEV *ScalarEvolution::getCouldNotCompute() {
   return CouldNotCompute.get();
@@ -4456,13 +4447,6 @@ ArrayRef<Value *> ScalarEvolution::getSCEVValues(const SCEV *S) {
   ExprValueMapType::iterator SI = ExprValueMap.find_as(S);
   if (SI == ExprValueMap.end())
     return std::nullopt;
-#ifndef NDEBUG
-  if (VerifySCEVMap) {
-    // Check there is no dangling Value in the set returned.
-    for (Value *V : SI->second)
-      assert(ValueExprMap.count(V));
-  }
-#endif
   return SI->second.getArrayRef();
 }
 
@@ -5838,9 +5822,7 @@ const SCEV *ScalarEvolution::createAddRecFromPHI(PHINode *PN) {
           // indices form a positive value.
           if (GEP->isInBounds() && GEP->getOperand(0) == PN) {
             Flags = setFlags(Flags, SCEV::FlagNW);
-
-            const SCEV *Ptr = getSCEV(GEP->getPointerOperand());
-            if (isKnownPositive(getMinusSCEV(getSCEV(GEP), Ptr)))
+            if (isKnownPositive(Accum))
               Flags = setFlags(Flags, SCEV::FlagNUW);
           }
 
@@ -6226,59 +6208,85 @@ const SCEV *ScalarEvolution::createNodeForGEP(GEPOperator *GEP) {
   return getGEPExpr(GEP, IndexExprs);
 }
 
-uint32_t ScalarEvolution::getMinTrailingZerosImpl(const SCEV *S) {
+APInt ScalarEvolution::getConstantMultipleImpl(const SCEV *S) {
+  uint64_t BitWidth = getTypeSizeInBits(S->getType());
+  auto GetShiftedByZeros = [BitWidth](uint32_t TrailingZeros) {
+    return TrailingZeros >= BitWidth
+               ? APInt::getZero(BitWidth)
+               : APInt::getOneBitSet(BitWidth, TrailingZeros);
+  };
+  auto GetGCDMultiple = [this](const SCEVNAryExpr *N) {
+    // The result is GCD of all operands results.
+    APInt Res = getConstantMultiple(N->getOperand(0));
+    for (unsigned I = 1, E = N->getNumOperands(); I < E && Res != 1; ++I)
+      Res = APIntOps::GreatestCommonDivisor(
+          Res, getConstantMultiple(N->getOperand(I)));
+    return Res;
+  };
+
   switch (S->getSCEVType()) {
   case scConstant:
-    return cast<SCEVConstant>(S)->getAPInt().countr_zero();
+    return cast<SCEVConstant>(S)->getAPInt();
+  case scPtrToInt:
+    return getConstantMultiple(cast<SCEVPtrToIntExpr>(S)->getOperand());
+  case scUDivExpr:
+  case scVScale:
+    return APInt(BitWidth, 1);
   case scTruncate: {
+    // Only multiples that are a power of 2 will hold after truncation.
     const SCEVTruncateExpr *T = cast<SCEVTruncateExpr>(S);
-    return std::min(getMinTrailingZeros(T->getOperand()),
-                    (uint32_t)getTypeSizeInBits(T->getType()));
+    uint32_t TZ = getMinTrailingZeros(T->getOperand());
+    return GetShiftedByZeros(TZ);
   }
-  case scZeroExtend:
+  case scZeroExtend: {
+    const SCEVZeroExtendExpr *Z = cast<SCEVZeroExtendExpr>(S);
+    return getConstantMultiple(Z->getOperand()).zext(BitWidth);
+  }
   case scSignExtend: {
-    const SCEVIntegralCastExpr *E = cast<SCEVIntegralCastExpr>(S);
-    uint32_t OpRes = getMinTrailingZeros(E->getOperand());
-    return OpRes == getTypeSizeInBits(E->getOperand()->getType())
-               ? getTypeSizeInBits(E->getType())
-               : OpRes;
+    const SCEVSignExtendExpr *E = cast<SCEVSignExtendExpr>(S);
+    return getConstantMultiple(E->getOperand()).sext(BitWidth);
   }
   case scMulExpr: {
     const SCEVMulExpr *M = cast<SCEVMulExpr>(S);
-    // The result is the sum of all operands results.
-    uint32_t SumOpRes = getMinTrailingZeros(M->getOperand(0));
-    uint32_t BitWidth = getTypeSizeInBits(M->getType());
-    for (unsigned I = 1, E = M->getNumOperands();
-         SumOpRes != BitWidth && I != E; ++I)
-      SumOpRes =
-          std::min(SumOpRes + getMinTrailingZeros(M->getOperand(I)), BitWidth);
-    return SumOpRes;
+    if (M->hasNoUnsignedWrap()) {
+      // The result is the product of all operand results.
+      APInt Res = getConstantMultiple(M->getOperand(0));
+      for (const SCEV *Operand : M->operands().drop_front())
+        Res = Res * getConstantMultiple(Operand);
+      return Res;
+    }
+
+    // If there are no wrap guarentees, find the trailing zeros, which is the
+    // sum of trailing zeros for all its operands.
+    uint32_t TZ = 0;
+    for (const SCEV *Operand : M->operands())
+      TZ += getMinTrailingZeros(Operand);
+    return GetShiftedByZeros(TZ);
   }
-  case scVScale:
-    return 0;
-  case scUDivExpr:
-    return 0;
-  case scPtrToInt:
   case scAddExpr:
-  case scAddRecExpr:
+  case scAddRecExpr: {
+    const SCEVNAryExpr *N = cast<SCEVNAryExpr>(S);
+    if (N->hasNoUnsignedWrap())
+        return GetGCDMultiple(N);
+    // Find the trailing bits, which is the minimum of its operands.
+    uint32_t TZ = getMinTrailingZeros(N->getOperand(0));
+    for (const SCEV *Operand : N->operands().drop_front())
+      TZ = std::min(TZ, getMinTrailingZeros(Operand));
+    return GetShiftedByZeros(TZ);
+  }
   case scUMaxExpr:
   case scSMaxExpr:
   case scUMinExpr:
   case scSMinExpr:
-  case scSequentialUMinExpr: {
-    // The result is the min of all operands results.
-    ArrayRef<const SCEV *> Ops = S->operands();
-    uint32_t MinOpRes = getMinTrailingZeros(Ops[0]);
-    for (unsigned I = 1, E = Ops.size(); MinOpRes && I != E; ++I)
-      MinOpRes = std::min(MinOpRes, getMinTrailingZeros(Ops[I]));
-    return MinOpRes;
-  }
+  case scSequentialUMinExpr:
+    return GetGCDMultiple(cast<SCEVNAryExpr>(S));
   case scUnknown: {
+    // ask ValueTracking for known bits
     const SCEVUnknown *U = cast<SCEVUnknown>(S);
-    // For a SCEVUnknown, ask ValueTracking.
-    KnownBits Known =
-        computeKnownBits(U->getValue(), getDataLayout(), 0, &AC, nullptr, &DT);
-    return Known.countMinTrailingZeros();
+    unsigned Known =
+        computeKnownBits(U->getValue(), getDataLayout(), 0, &AC, nullptr, &DT)
+            .countMinTrailingZeros();
+    return GetShiftedByZeros(Known);
   }
   case scCouldNotCompute:
     llvm_unreachable("Attempt to use a SCEVCouldNotCompute object!");
@@ -6286,15 +6294,25 @@ uint32_t ScalarEvolution::getMinTrailingZerosImpl(const SCEV *S) {
   llvm_unreachable("Unknown SCEV kind!");
 }
 
-uint32_t ScalarEvolution::getMinTrailingZeros(const SCEV *S) {
-  auto I = MinTrailingZerosCache.find(S);
-  if (I != MinTrailingZerosCache.end())
+APInt ScalarEvolution::getConstantMultiple(const SCEV *S) {
+  auto I = ConstantMultipleCache.find(S);
+  if (I != ConstantMultipleCache.end())
     return I->second;
 
-  uint32_t Result = getMinTrailingZerosImpl(S);
-  auto InsertPair = MinTrailingZerosCache.insert({S, Result});
+  APInt Result = getConstantMultipleImpl(S);
+  auto InsertPair = ConstantMultipleCache.insert({S, Result});
   assert(InsertPair.second && "Should insert a new key");
   return InsertPair.first->second;
+}
+
+APInt ScalarEvolution::getNonZeroConstantMultiple(const SCEV *S) {
+  APInt Multiple = getConstantMultiple(S);
+  return Multiple == 0 ? APInt(Multiple.getBitWidth(), 1) : Multiple;
+}
+
+uint32_t ScalarEvolution::getMinTrailingZeros(const SCEV *S) {
+  return std::min(getConstantMultiple(S).countTrailingZeros(),
+                  (unsigned)getTypeSizeInBits(S->getType()));
 }
 
 /// Helper method to assign a range to V from metadata present in the IR.
@@ -6312,6 +6330,7 @@ void ScalarEvolution::setNoWrapFlags(SCEVAddRecExpr *AddRec,
     AddRec->setNoWrapFlags(Flags);
     UnsignedRanges.erase(AddRec);
     SignedRanges.erase(AddRec);
+    ConstantMultipleCache.erase(AddRec);
   }
 }
 
@@ -6545,16 +6564,21 @@ const ConstantRange &ScalarEvolution::getRangeRef(
 
   // If the value has known zeros, the maximum value will have those known zeros
   // as well.
-  uint32_t TZ = getMinTrailingZeros(S);
-  if (TZ != 0) {
-    if (SignHint == ScalarEvolution::HINT_RANGE_UNSIGNED)
+  if (SignHint == ScalarEvolution::HINT_RANGE_UNSIGNED) {
+    APInt Multiple = getNonZeroConstantMultiple(S);
+    APInt Remainder = APInt::getMaxValue(BitWidth).urem(Multiple);
+    if (!Remainder.isZero())
       ConservativeResult =
           ConstantRange(APInt::getMinValue(BitWidth),
-                        APInt::getMaxValue(BitWidth).lshr(TZ).shl(TZ) + 1);
-    else
+                        APInt::getMaxValue(BitWidth) - Remainder + 1);
+  }
+  else {
+    uint32_t TZ = getMinTrailingZeros(S);
+    if (TZ != 0) {
       ConservativeResult = ConstantRange(
           APInt::getSignedMinValue(BitWidth),
           APInt::getSignedMaxValue(BitWidth).ashr(TZ).shl(TZ) + 1);
+    }
   }
 
   switch (S->getSCEVType()) {
@@ -6657,21 +6681,30 @@ const ConstantRange &ScalarEvolution::getRangeRef(
 
     // TODO: non-affine addrec
     if (AddRec->isAffine()) {
-      const SCEV *MaxBECount =
+      const SCEV *MaxBEScev =
           getConstantMaxBackedgeTakenCount(AddRec->getLoop());
-      if (!isa<SCEVCouldNotCompute>(MaxBECount) &&
-          getTypeSizeInBits(MaxBECount->getType()) <= BitWidth) {
-        auto RangeFromAffine = getRangeForAffineAR(
-            AddRec->getStart(), AddRec->getStepRecurrence(*this), MaxBECount,
-            BitWidth);
-        ConservativeResult =
-            ConservativeResult.intersectWith(RangeFromAffine, RangeType);
+      if (!isa<SCEVCouldNotCompute>(MaxBEScev)) {
+        APInt MaxBECount = cast<SCEVConstant>(MaxBEScev)->getAPInt();
 
-        auto RangeFromFactoring = getRangeViaFactoring(
-            AddRec->getStart(), AddRec->getStepRecurrence(*this), MaxBECount,
-            BitWidth);
-        ConservativeResult =
-            ConservativeResult.intersectWith(RangeFromFactoring, RangeType);
+        // Adjust MaxBECount to the same bitwidth as AddRec. We can truncate if
+        // MaxBECount's active bits are all <= AddRec's bit width.
+        if (MaxBECount.getBitWidth() > BitWidth &&
+            MaxBECount.getActiveBits() <= BitWidth)
+          MaxBECount = MaxBECount.trunc(BitWidth);
+        else if (MaxBECount.getBitWidth() < BitWidth)
+          MaxBECount = MaxBECount.zext(BitWidth);
+
+        if (MaxBECount.getBitWidth() == BitWidth) {
+          auto RangeFromAffine = getRangeForAffineAR(
+              AddRec->getStart(), AddRec->getStepRecurrence(*this), MaxBECount);
+          ConservativeResult =
+              ConservativeResult.intersectWith(RangeFromAffine, RangeType);
+
+          auto RangeFromFactoring = getRangeViaFactoring(
+              AddRec->getStart(), AddRec->getStepRecurrence(*this), MaxBECount);
+          ConservativeResult =
+              ConservativeResult.intersectWith(RangeFromFactoring, RangeType);
+        }
       }
 
       // Now try symbolic BE count and more powerful methods.
@@ -6679,7 +6712,7 @@ const ConstantRange &ScalarEvolution::getRangeRef(
         const SCEV *SymbolicMaxBECount =
             getSymbolicMaxBackedgeTakenCount(AddRec->getLoop());
         if (!isa<SCEVCouldNotCompute>(SymbolicMaxBECount) &&
-            getTypeSizeInBits(MaxBECount->getType()) <= BitWidth &&
+            getTypeSizeInBits(MaxBEScev->getType()) <= BitWidth &&
             AddRec->hasNoSelfWrap()) {
           auto RangeFromAffineNew = getRangeForAffineNoSelfWrappingAR(
               AddRec, SymbolicMaxBECount, BitWidth, SignHint);
@@ -6725,9 +6758,10 @@ const ConstantRange &ScalarEvolution::getRangeRef(
   }
   case scUnknown: {
     const SCEVUnknown *U = cast<SCEVUnknown>(S);
+    Value *V = U->getValue();
 
     // Check if the IR explicitly contains !range metadata.
-    std::optional<ConstantRange> MDRange = GetRangeFromMetadata(U->getValue());
+    std::optional<ConstantRange> MDRange = GetRangeFromMetadata(V);
     if (MDRange)
       ConservativeResult =
           ConservativeResult.intersectWith(*MDRange, RangeType);
@@ -6740,13 +6774,13 @@ const ConstantRange &ScalarEvolution::getRangeRef(
 
     // See if ValueTracking can give us a useful range.
     const DataLayout &DL = getDataLayout();
-    KnownBits Known = computeKnownBits(U->getValue(), DL, 0, &AC, nullptr, &DT);
+    KnownBits Known = computeKnownBits(V, DL, 0, &AC, nullptr, &DT);
     if (Known.getBitWidth() != BitWidth)
       Known = Known.zextOrTrunc(BitWidth);
 
     // ValueTracking may be able to compute a tighter result for the number of
     // sign bits than for the value of those sign bits.
-    unsigned NS = ComputeNumSignBits(U->getValue(), DL, 0, &AC, nullptr, &DT);
+    unsigned NS = ComputeNumSignBits(V, DL, 0, &AC, nullptr, &DT);
     if (U->getType()->isPointerTy()) {
       // If the pointer size is larger than the index size type, this can cause
       // NS to be larger than BitWidth. So compensate for this.
@@ -6775,15 +6809,15 @@ const ConstantRange &ScalarEvolution::getRangeRef(
           RangeType);
 
     if (U->getType()->isPointerTy() && SignHint == HINT_RANGE_UNSIGNED) {
-      // Strengthen the range if the underlying IR value is a global using the
-      // size of the global.
+      // Strengthen the range if the underlying IR value is a
+      // global/alloca/heap allocation using the size of the object.
       ObjectSizeOpts Opts;
       Opts.RoundToAlign = false;
       Opts.NullIsUnknownSize = true;
       uint64_t ObjSize;
-      auto *GV = dyn_cast<GlobalVariable>(U->getValue());
-      if (GV && getObjectSize(U->getValue(), ObjSize, DL, &TLI, Opts) &&
-          ObjSize > 1) {
+      if ((isa<GlobalVariable>(V) || isa<AllocaInst>(V) ||
+           isAllocationFn(V, &TLI)) &&
+          getObjectSize(V, ObjSize, DL, &TLI, Opts) && ObjSize > 1) {
         // The highest address the object can start is ObjSize bytes before the
         // end (unsigned max value). If this value is not a multiple of the
         // alignment, the last possible start value is the next lowest multiple
@@ -6791,16 +6825,19 @@ const ConstantRange &ScalarEvolution::getRangeRef(
         // because if they would there's no possible start address for the
         // object.
         APInt MaxVal = APInt::getMaxValue(BitWidth) - APInt(BitWidth, ObjSize);
-        uint64_t Align = GV->getAlign().valueOrOne().value();
+        uint64_t Align = U->getValue()->getPointerAlignment(DL).value();
         uint64_t Rem = MaxVal.urem(Align);
         MaxVal -= APInt(BitWidth, Rem);
+        APInt MinVal = APInt::getZero(BitWidth);
+        if (llvm::isKnownNonZero(V, DL))
+          MinVal = Align;
         ConservativeResult = ConservativeResult.intersectWith(
-            {ConservativeResult.getUnsignedMin(), MaxVal + 1}, RangeType);
+            {MinVal, MaxVal + 1}, RangeType);
       }
     }
 
     // A range of Phi is a subset of union of all ranges of its input.
-    if (PHINode *Phi = dyn_cast<PHINode>(U->getValue())) {
+    if (PHINode *Phi = dyn_cast<PHINode>(V)) {
       // Make sure that we do not run over cycled Phis.
       if (PendingPhiRanges.insert(Phi).second) {
         ConstantRange RangeFromOps(BitWidth, /*isFullSet=*/false);
@@ -6821,7 +6858,7 @@ const ConstantRange &ScalarEvolution::getRangeRef(
     }
 
     // vscale can't be equal to zero
-    if (const auto *II = dyn_cast<IntrinsicInst>(U->getValue()))
+    if (const auto *II = dyn_cast<IntrinsicInst>(V))
       if (II->getIntrinsicID() == Intrinsic::vscale) {
         ConstantRange Disallowed = APInt::getZero(BitWidth);
         ConservativeResult = ConservativeResult.difference(Disallowed);
@@ -6843,7 +6880,10 @@ const ConstantRange &ScalarEvolution::getRangeRef(
 static ConstantRange getRangeForAffineARHelper(APInt Step,
                                                const ConstantRange &StartRange,
                                                const APInt &MaxBECount,
-                                               unsigned BitWidth, bool Signed) {
+                                               bool Signed) {
+  unsigned BitWidth = Step.getBitWidth();
+  assert(BitWidth == StartRange.getBitWidth() &&
+         BitWidth == MaxBECount.getBitWidth() && "mismatched bit widths");
   // If either Step or MaxBECount is 0, then the expression won't change, and we
   // just need to return the initial range.
   if (Step == 0 || MaxBECount == 0)
@@ -6902,14 +6942,11 @@ static ConstantRange getRangeForAffineARHelper(APInt Step,
 
 ConstantRange ScalarEvolution::getRangeForAffineAR(const SCEV *Start,
                                                    const SCEV *Step,
-                                                   const SCEV *MaxBECount,
-                                                   unsigned BitWidth) {
-  assert(!isa<SCEVCouldNotCompute>(MaxBECount) &&
-         getTypeSizeInBits(MaxBECount->getType()) <= BitWidth &&
-         "Precondition!");
-
-  MaxBECount = getNoopOrZeroExtend(MaxBECount, Start->getType());
-  APInt MaxBECountValue = getUnsignedRangeMax(MaxBECount);
+                                                   const APInt &MaxBECount) {
+  assert(getTypeSizeInBits(Start->getType()) ==
+             getTypeSizeInBits(Step->getType()) &&
+         getTypeSizeInBits(Start->getType()) == MaxBECount.getBitWidth() &&
+         "mismatched bit widths");
 
   // First, consider step signed.
   ConstantRange StartSRange = getSignedRange(Start);
@@ -6917,17 +6954,16 @@ ConstantRange ScalarEvolution::getRangeForAffineAR(const SCEV *Start,
 
   // If Step can be both positive and negative, we need to find ranges for the
   // maximum absolute step values in both directions and union them.
-  ConstantRange SR =
-      getRangeForAffineARHelper(StepSRange.getSignedMin(), StartSRange,
-                                MaxBECountValue, BitWidth, /* Signed = */ true);
+  ConstantRange SR = getRangeForAffineARHelper(
+      StepSRange.getSignedMin(), StartSRange, MaxBECount, /* Signed = */ true);
   SR = SR.unionWith(getRangeForAffineARHelper(StepSRange.getSignedMax(),
-                                              StartSRange, MaxBECountValue,
-                                              BitWidth, /* Signed = */ true));
+                                              StartSRange, MaxBECount,
+                                              /* Signed = */ true));
 
   // Next, consider step unsigned.
   ConstantRange UR = getRangeForAffineARHelper(
-      getUnsignedRangeMax(Step), getUnsignedRange(Start),
-      MaxBECountValue, BitWidth, /* Signed = */ false);
+      getUnsignedRangeMax(Step), getUnsignedRange(Start), MaxBECount,
+      /* Signed = */ false);
 
   // Finally, intersect signed and unsigned ranges.
   return SR.intersectWith(UR, ConstantRange::Smallest);
@@ -7003,10 +7039,14 @@ ConstantRange ScalarEvolution::getRangeForAffineNoSelfWrappingAR(
 
 ConstantRange ScalarEvolution::getRangeViaFactoring(const SCEV *Start,
                                                     const SCEV *Step,
-                                                    const SCEV *MaxBECount,
-                                                    unsigned BitWidth) {
+                                                    const APInt &MaxBECount) {
   //    RangeOf({C?A:B,+,C?P:Q}) == RangeOf(C?{A,+,P}:{B,+,Q})
   // == RangeOf({A,+,P}) union RangeOf({B,+,Q})
+
+  unsigned BitWidth = MaxBECount.getBitWidth();
+  assert(getTypeSizeInBits(Start->getType()) == BitWidth &&
+         getTypeSizeInBits(Step->getType()) == BitWidth &&
+         "mismatched bit widths");
 
   struct SelectPattern {
     Value *Condition = nullptr;
@@ -7109,9 +7149,9 @@ ConstantRange ScalarEvolution::getRangeViaFactoring(const SCEV *Start,
   const SCEV *FalseStep = this->getConstant(StepPattern.FalseValue);
 
   ConstantRange TrueRange =
-      this->getRangeForAffineAR(TrueStart, TrueStep, MaxBECount, BitWidth);
+      this->getRangeForAffineAR(TrueStart, TrueStep, MaxBECount);
   ConstantRange FalseRange =
-      this->getRangeForAffineAR(FalseStart, FalseStep, MaxBECount, BitWidth);
+      this->getRangeForAffineAR(FalseStart, FalseStep, MaxBECount);
 
   return TrueRange.unionWith(FalseRange);
 }
@@ -8067,126 +8107,6 @@ unsigned ScalarEvolution::getSmallConstantMaxTripCount(const Loop *L) {
   return getConstantTripCount(MaxExitCount);
 }
 
-const SCEV *ScalarEvolution::getConstantMaxTripCountFromArray(const Loop *L) {
-  // We can't infer from Array in Irregular Loop.
-  // FIXME: It's hard to infer loop bound from array operated in Nested Loop.
-  if (!L->isLoopSimplifyForm() || !L->isInnermost())
-    return getCouldNotCompute();
-
-  // FIXME: To make the scene more typical, we only analysis loops that have
-  // one exiting block and that block must be the latch. To make it easier to
-  // capture loops that have memory access and memory access will be executed
-  // in each iteration.
-  const BasicBlock *LoopLatch = L->getLoopLatch();
-  assert(LoopLatch && "See defination of simplify form loop.");
-  if (L->getExitingBlock() != LoopLatch)
-    return getCouldNotCompute();
-
-  const DataLayout &DL = getDataLayout();
-  SmallVector<const SCEV *> InferCountColl;
-  for (auto *BB : L->getBlocks()) {
-    // Go here, we can know that Loop is a single exiting and simplified form
-    // loop. Make sure that infer from Memory Operation in those BBs must be
-    // executed in loop. First step, we can make sure that max execution time
-    // of MemAccessBB in loop represents latch max excution time.
-    // If MemAccessBB does not dom Latch, skip.
-    //            Entry
-    //              │
-    //        ┌─────▼─────┐
-    //        │Loop Header◄─────┐
-    //        └──┬──────┬─┘     │
-    //           │      │       │
-    //  ┌────────▼──┐ ┌─▼─────┐ │
-    //  │MemAccessBB│ │OtherBB│ │
-    //  └────────┬──┘ └─┬─────┘ │
-    //           │      │       │
-    //         ┌─▼──────▼─┐     │
-    //         │Loop Latch├─────┘
-    //         └────┬─────┘
-    //              ▼
-    //             Exit
-    if (!DT.dominates(BB, LoopLatch))
-      continue;
-
-    for (Instruction &Inst : *BB) {
-      // Find Memory Operation Instruction.
-      auto *GEP = getLoadStorePointerOperand(&Inst);
-      if (!GEP)
-        continue;
-
-      auto *ElemSize = dyn_cast<SCEVConstant>(getElementSize(&Inst));
-      // Do not infer from scalar type, eg."ElemSize = sizeof()".
-      if (!ElemSize)
-        continue;
-
-      // Use a existing polynomial recurrence on the trip count.
-      auto *AddRec = dyn_cast<SCEVAddRecExpr>(getSCEV(GEP));
-      if (!AddRec)
-        continue;
-      auto *ArrBase = dyn_cast<SCEVUnknown>(getPointerBase(AddRec));
-      auto *Step = dyn_cast<SCEVConstant>(AddRec->getStepRecurrence(*this));
-      if (!ArrBase || !Step)
-        continue;
-      assert(isLoopInvariant(ArrBase, L) && "See addrec definition");
-
-      // Only handle { %array + step },
-      // FIXME: {(SCEVAddRecExpr) + step } could not be analysed here.
-      if (AddRec->getStart() != ArrBase)
-        continue;
-
-      // Memory operation pattern which have gaps.
-      // Or repeat memory opreation.
-      // And index of GEP wraps arround.
-      if (Step->getAPInt().getActiveBits() > 32 ||
-          Step->getAPInt().getZExtValue() !=
-              ElemSize->getAPInt().getZExtValue() ||
-          Step->isZero() || Step->getAPInt().isNegative())
-        continue;
-
-      // Only infer from stack array which has certain size.
-      // Make sure alloca instruction is not excuted in loop.
-      AllocaInst *AllocateInst = dyn_cast<AllocaInst>(ArrBase->getValue());
-      if (!AllocateInst || L->contains(AllocateInst->getParent()))
-        continue;
-
-      // Make sure only handle normal array.
-      auto *Ty = dyn_cast<ArrayType>(AllocateInst->getAllocatedType());
-      auto *ArrSize = dyn_cast<ConstantInt>(AllocateInst->getArraySize());
-      if (!Ty || !ArrSize || !ArrSize->isOne())
-        continue;
-
-      // FIXME: Since gep indices are silently zext to the indexing type,
-      // we will have a narrow gep index which wraps around rather than
-      // increasing strictly, we shoule ensure that step is increasing
-      // strictly by the loop iteration.
-      // Now we can infer a max execution time by MemLength/StepLength.
-      const SCEV *MemSize =
-          getConstant(Step->getType(), DL.getTypeAllocSize(Ty));
-      auto *MaxExeCount =
-          dyn_cast<SCEVConstant>(getUDivCeilSCEV(MemSize, Step));
-      if (!MaxExeCount || MaxExeCount->getAPInt().getActiveBits() > 32)
-        continue;
-
-      // If the loop reaches the maximum number of executions, we can not
-      // access bytes starting outside the statically allocated size without
-      // being immediate UB. But it is allowed to enter loop header one more
-      // time.
-      auto *InferCount = dyn_cast<SCEVConstant>(
-          getAddExpr(MaxExeCount, getOne(MaxExeCount->getType())));
-      // Discard the maximum number of execution times under 32bits.
-      if (!InferCount || InferCount->getAPInt().getActiveBits() > 32)
-        continue;
-
-      InferCountColl.push_back(InferCount);
-    }
-  }
-
-  if (InferCountColl.size() == 0)
-    return getCouldNotCompute();
-
-  return getUMinFromMismatchedTypes(InferCountColl);
-}
-
 unsigned ScalarEvolution::getSmallConstantTripMultiple(const Loop *L) {
   SmallVector<BasicBlock *, 8> ExitingBlocks;
   L->getExitingBlocks(ExitingBlocks);
@@ -8209,27 +8129,12 @@ unsigned ScalarEvolution::getSmallConstantTripMultiple(const Loop *L,
   // Get the trip count
   const SCEV *TCExpr = getTripCountFromExitCount(applyLoopGuards(ExitCount, L));
 
+  APInt Multiple = getNonZeroConstantMultiple(TCExpr);
   // If a trip multiple is huge (>=2^32), the trip count is still divisible by
   // the greatest power of 2 divisor less than 2^32.
-  auto GetSmallMultiple = [](unsigned TrailingZeros) {
-    return 1U << std::min((uint32_t)31, TrailingZeros);
-  };
-
-  const SCEVConstant *TC = dyn_cast<SCEVConstant>(TCExpr);
-  if (!TC)
-    // Attempt to factor more general cases. Returns the greatest power of
-    // two divisor.
-    return GetSmallMultiple(getMinTrailingZeros(TCExpr));
-
-  ConstantInt *Result = TC->getValue();
-  assert(Result && "SCEVConstant expected to have non-null ConstantInt");
-  assert(Result->getValue() != 0 && "trip count should never be zero");
-
-  // Guard against huge trip multiples.
-  if (Result->getValue().getActiveBits() > 32)
-    return GetSmallMultiple(Result->getValue().countTrailingZeros());
-
-  return (unsigned)Result->getZExtValue();
+  return Multiple.getActiveBits() > 32
+             ? 1U << std::min((unsigned)31, Multiple.countTrailingZeros())
+             : (unsigned)Multiple.zextOrTrunc(32).getZExtValue();
 }
 
 /// Returns the largest constant divisor of the trip count of this loop as a
@@ -8337,23 +8242,6 @@ ScalarEvolution::getBackedgeTakenInfo(const Loop *L) {
   // must be cleared in this scope.
   BackedgeTakenInfo Result = computeBackedgeTakenCount(L);
 
-  // In product build, there are no usage of statistic.
-  (void)NumTripCountsComputed;
-  (void)NumTripCountsNotComputed;
-#if LLVM_ENABLE_STATS || !defined(NDEBUG)
-  const SCEV *BEExact = Result.getExact(L, this);
-  if (BEExact != getCouldNotCompute()) {
-    assert(isLoopInvariant(BEExact, L) &&
-           isLoopInvariant(Result.getConstantMax(this), L) &&
-           "Computed backedge-taken count isn't loop invariant for loop!");
-    ++NumTripCountsComputed;
-  } else if (Result.getConstantMax(this) == getCouldNotCompute() &&
-             isa<PHINode>(L->getHeader()->begin())) {
-    // Only count loops that have phi nodes as not being computable.
-    ++NumTripCountsNotComputed;
-  }
-#endif // LLVM_ENABLE_STATS || !defined(NDEBUG)
-
   // Now that we know more about the trip count for this loop, forget any
   // existing SCEV values for PHI nodes in this loop since they are only
   // conservative estimates made without the benefit of trip count
@@ -8400,7 +8288,7 @@ void ScalarEvolution::forgetAllLoops() {
   SignedRanges.clear();
   ExprValueMap.clear();
   HasRecMap.clear();
-  MinTrailingZerosCache.clear();
+  ConstantMultipleCache.clear();
   PredicatedSCEVRewrites.clear();
   FoldCache.clear();
   FoldCacheUser.clear();
@@ -8739,7 +8627,9 @@ ScalarEvolution::computeBackedgeTakenCount(const Loop *L,
 
     // 1. For each exit that can be computed, add an entry to ExitCounts.
     // CouldComputeBECount is true only if all exits can be computed.
-    if (EL.ExactNotTaken == getCouldNotCompute())
+    if (EL.ExactNotTaken != getCouldNotCompute())
+      ++NumExitCountsComputed;
+    else
       // We couldn't compute an exact value for this exit, so
       // we won't be able to compute an exact value for the loop.
       CouldComputeBECount = false;
@@ -8747,9 +8637,11 @@ ScalarEvolution::computeBackedgeTakenCount(const Loop *L,
     // Exact always implies symbolic, only check symbolic.
     if (EL.SymbolicMaxNotTaken != getCouldNotCompute())
       ExitCounts.emplace_back(ExitBB, EL);
-    else
+    else {
       assert(EL.ExactNotTaken == getCouldNotCompute() &&
              "Exact is known but symbolic isn't?");
+      ++NumExitCountsNotComputed;
+    }
 
     // 2. Derive the loop's MaxBECount from each exit's max number of
     // non-exiting iterations. Partition the loop exits into two kinds:
@@ -9114,7 +9006,7 @@ ScalarEvolution::ExitLimit ScalarEvolution::computeExitLimitFromICmp(
       InnerLHS = ZExt->getOperand();
     if (const SCEVAddRecExpr *AR = dyn_cast<SCEVAddRecExpr>(InnerLHS)) {
       auto *StrideC = dyn_cast<SCEVConstant>(AR->getStepRecurrence(*this));
-      if (!AR->hasNoSelfWrap() && AR->getLoop() == L && AR->isAffine() && 
+      if (!AR->hasNoSelfWrap() && AR->getLoop() == L && AR->isAffine() &&
           StrideC && StrideC->getAPInt().isPowerOf2()) {
         auto Flags = AR->getNoWrapFlags();
         Flags = setFlags(Flags, SCEV::FlagNW);
@@ -12608,7 +12500,7 @@ bool ScalarEvolution::canIVOverflowOnLT(const SCEV *RHS, const SCEV *Stride,
 
 bool ScalarEvolution::canIVOverflowOnGT(const SCEV *RHS, const SCEV *Stride,
                                         bool IsSigned) {
-  
+
   unsigned BitWidth = getTypeSizeInBits(RHS->getType());
   const SCEV *One = getOne(Stride->getType());
 
@@ -13416,7 +13308,7 @@ ScalarEvolution::ScalarEvolution(ScalarEvolution &&Arg)
       PendingLoopPredicates(std::move(Arg.PendingLoopPredicates)),
       PendingPhiRanges(std::move(Arg.PendingPhiRanges)),
       PendingMerges(std::move(Arg.PendingMerges)),
-      MinTrailingZerosCache(std::move(Arg.MinTrailingZerosCache)),
+      ConstantMultipleCache(std::move(Arg.ConstantMultipleCache)),
       BackedgeTakenCounts(std::move(Arg.BackedgeTakenCounts)),
       PredicatedBackedgeTakenCounts(
           std::move(Arg.PredicatedBackedgeTakenCounts)),
@@ -13552,16 +13444,36 @@ static void PrintLoopInfo(raw_ostream &OS, ScalarEvolution *SE,
   }
 }
 
-static StringRef loopDispositionToStr(ScalarEvolution::LoopDisposition LD) {
+namespace llvm {
+raw_ostream &operator<<(raw_ostream &OS, ScalarEvolution::LoopDisposition LD) {
   switch (LD) {
   case ScalarEvolution::LoopVariant:
-    return "Variant";
+    OS << "Variant";
+    break;
   case ScalarEvolution::LoopInvariant:
-    return "Invariant";
+    OS << "Invariant";
+    break;
   case ScalarEvolution::LoopComputable:
-    return "Computable";
+    OS << "Computable";
+    break;
   }
-  llvm_unreachable("Unknown ScalarEvolution::LoopDisposition kind!");
+  return OS;
+}
+
+raw_ostream &operator<<(raw_ostream &OS, ScalarEvolution::BlockDisposition BD) {
+  switch (BD) {
+  case ScalarEvolution::DoesNotDominateBlock:
+    OS << "DoesNotDominate";
+    break;
+  case ScalarEvolution::DominatesBlock:
+    OS << "Dominates";
+    break;
+  case ScalarEvolution::ProperlyDominatesBlock:
+    OS << "ProperlyDominates";
+    break;
+  }
+  return OS;
+}
 }
 
 void ScalarEvolution::print(raw_ostream &OS) const {
@@ -13623,7 +13535,7 @@ void ScalarEvolution::print(raw_ostream &OS) const {
             }
 
             Iter->getHeader()->printAsOperand(OS, /*PrintType=*/false);
-            OS << ": " << loopDispositionToStr(SE.getLoopDisposition(SV, Iter));
+            OS << ": " << SE.getLoopDisposition(SV, Iter);
           }
 
           for (const auto *InnerL : depth_first(L)) {
@@ -13637,7 +13549,7 @@ void ScalarEvolution::print(raw_ostream &OS) const {
             }
 
             InnerL->getHeader()->printAsOperand(OS, /*PrintType=*/false);
-            OS << ": " << loopDispositionToStr(SE.getLoopDisposition(SV, InnerL));
+            OS << ": " << SE.getLoopDisposition(SV, InnerL);
           }
 
           OS << " }";
@@ -13891,7 +13803,7 @@ void ScalarEvolution::forgetMemoizedResultsImpl(const SCEV *S) {
   UnsignedRanges.erase(S);
   SignedRanges.erase(S);
   HasRecMap.erase(S);
-  MinTrailingZerosCache.erase(S);
+  ConstantMultipleCache.erase(S);
 
   if (auto *AR = dyn_cast<SCEVAddRecExpr>(S)) {
     UnsignedWrapViaInductionTried.erase(AR);
@@ -14223,9 +14135,8 @@ void ScalarEvolution::verify() const {
       const auto RecomputedDisposition = SE2.getLoopDisposition(S, Loop);
       if (CachedDisposition != RecomputedDisposition) {
         dbgs() << "Cached disposition of " << *S << " for loop " << *Loop
-               << " is incorrect: cached "
-               << loopDispositionToStr(CachedDisposition) << ", actual "
-               << loopDispositionToStr(RecomputedDisposition) << "\n";
+               << " is incorrect: cached " << CachedDisposition << ", actual "
+               << RecomputedDisposition << "\n";
         std::abort();
       }
     }
@@ -14237,7 +14148,8 @@ void ScalarEvolution::verify() const {
       const auto RecomputedDisposition = SE2.getBlockDisposition(S, BB);
       if (CachedDisposition != RecomputedDisposition) {
         dbgs() << "Cached disposition of " << *S << " for block %"
-               << BB->getName() << " is incorrect! \n";
+               << BB->getName() << " is incorrect: cached " << CachedDisposition
+               << ", actual " << RecomputedDisposition << "\n";
         std::abort();
       }
     }
@@ -14269,6 +14181,23 @@ void ScalarEvolution::verify() const {
                << *I->second << " != " << *Expr << "!\n";
         std::abort();
       }
+    }
+  }
+
+  // Verify that ConstantMultipleCache computations are correct. We check that
+  // cached multiples and recomputed multiples are multiples of each other to
+  // verify correctness. It is possible that a recomputed multiple is different
+  // from the cached multiple due to strengthened no wrap flags or changes in
+  // KnownBits computations.
+  for (auto [S, Multiple] : ConstantMultipleCache) {
+    APInt RecomputedMultiple = SE2.getConstantMultiple(S);
+    if ((Multiple != 0 && RecomputedMultiple != 0 &&
+         Multiple.urem(RecomputedMultiple) != 0 &&
+         RecomputedMultiple.urem(Multiple) != 0)) {
+      dbgs() << "Incorrect cached computation in ConstantMultipleCache for "
+             << *S << " : Computed " << RecomputedMultiple
+             << " but cache contains " << Multiple << "!\n";
+      std::abort();
     }
   }
 }
@@ -14926,9 +14855,25 @@ public:
 
   const SCEV *visitZeroExtendExpr(const SCEVZeroExtendExpr *Expr) {
     auto I = Map.find(Expr);
-    if (I == Map.end())
+    if (I == Map.end()) {
+      // If we didn't find the extact ZExt expr in the map, check if there's an
+      // entry for a smaller ZExt we can use instead.
+      Type *Ty = Expr->getType();
+      const SCEV *Op = Expr->getOperand(0);
+      unsigned Bitwidth = Ty->getScalarSizeInBits() / 2;
+      while (Bitwidth % 8 == 0 && Bitwidth >= 8 &&
+             Bitwidth > Op->getType()->getScalarSizeInBits()) {
+        Type *NarrowTy = IntegerType::get(SE.getContext(), Bitwidth);
+        auto *NarrowExt = SE.getZeroExtendExpr(Op, NarrowTy);
+        auto I = Map.find(NarrowExt);
+        if (I != Map.end())
+          return SE.getZeroExtendExpr(I->second, Ty);
+        Bitwidth = Bitwidth / 2;
+      }
+
       return SCEVRewriteVisitor<SCEVLoopGuardRewriter>::visitZeroExtendExpr(
           Expr);
+    }
     return I->second;
   }
 
@@ -15208,7 +15153,7 @@ const SCEV *ScalarEvolution::applyLoopGuards(const SCEV *Expr, const Loop *L) {
         if (RHS->getType()->isPointerTy())
           return;
         RHS = getUMaxExpr(RHS, One);
-        LLVM_FALLTHROUGH;
+        [[fallthrough]];
       case CmpInst::ICMP_SLT: {
         RHS = getMinusSCEV(RHS, One);
         RHS = DividesBy ? GetPreviousSCEVDividesByDivisor(RHS, DividesBy) : RHS;

@@ -23,6 +23,7 @@
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/MachineValueType.h"
 #include "llvm/CodeGen/RegisterClassInfo.h"
 #include "llvm/CodeGen/ScheduleDAG.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
@@ -31,7 +32,6 @@
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/MachineValueType.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <utility>
@@ -200,7 +200,7 @@ void AggressiveAntiDepBreaker::Observe(MachineInstr &MI, unsigned Count,
   LLVM_DEBUG(dbgs() << "\tRegs:");
 
   std::vector<unsigned> &DefIndices = State->GetDefIndices();
-  for (unsigned Reg = 0; Reg != TRI->getNumRegs(); ++Reg) {
+  for (unsigned Reg = 1; Reg != TRI->getNumRegs(); ++Reg) {
     // If Reg is current live, then mark that it can't be renamed as
     // we don't know the extent of its live-range anymore (now that it
     // has been scheduled). If it is not live but was defined in the
@@ -351,8 +351,7 @@ void AggressiveAntiDepBreaker::PrescanInstruction(
   // dead, or because only a subregister is live at the def. If we
   // don't do this the dead def will be incorrectly merged into the
   // previous def.
-  for (const MachineOperand &MO : MI.operands()) {
-    if (!MO.isReg() || !MO.isDef()) continue;
+  for (const MachineOperand &MO : MI.all_defs()) {
     Register Reg = MO.getReg();
     if (Reg == 0) continue;
 
@@ -776,7 +775,7 @@ unsigned AggressiveAntiDepBreaker::BreakAntiDependencies(
 #ifndef NDEBUG
   LLVM_DEBUG(dbgs() << "\n===== Aggressive anti-dependency breaking\n");
   LLVM_DEBUG(dbgs() << "Available regs:");
-  for (unsigned Reg = 0; Reg < TRI->getNumRegs(); ++Reg) {
+  for (unsigned Reg = 1; Reg < TRI->getNumRegs(); ++Reg) {
     if (!State->IsLive(Reg))
       LLVM_DEBUG(dbgs() << " " << printReg(Reg, TRI));
   }
@@ -910,7 +909,7 @@ unsigned AggressiveAntiDepBreaker::BreakAntiDependencies(
             unsigned R = S.getReg();
             if (!RegAliases[R])
               continue;
-            if (R == AntiDepReg || TRI->isSubRegister(AntiDepReg, R))
+            if (TRI->isSubRegisterEq(AntiDepReg, R))
               continue;
             AntiDepReg = 0;
             break;

@@ -87,10 +87,26 @@ public:
   bool isMin() const { return F.isSmallest(); }
   bool isMinusOne() const { return F.isExactlyValue(-1.0); }
   bool isNan() const { return F.isNaN(); }
+  bool isInf() const { return F.isInfinity(); }
   bool isFinite() const { return F.isFinite(); }
+  bool isNormal() const { return F.isNormal(); }
+  bool isDenormal() const { return F.isDenormal(); }
+  llvm::FPClassTest classify() const { return F.classify(); }
+  APFloat::fltCategory getCategory() const { return F.getCategory(); }
 
   ComparisonCategoryResult compare(const Floating &RHS) const {
-    return Compare(F, RHS.F);
+    llvm::APFloatBase::cmpResult CmpRes = F.compare(RHS.F);
+    switch (CmpRes) {
+    case llvm::APFloatBase::cmpLessThan:
+      return ComparisonCategoryResult::Less;
+    case llvm::APFloatBase::cmpEqual:
+      return ComparisonCategoryResult::Equal;
+    case llvm::APFloatBase::cmpGreaterThan:
+      return ComparisonCategoryResult::Greater;
+    case llvm::APFloatBase::cmpUnordered:
+      return ComparisonCategoryResult::Unordered;
+    }
+    llvm_unreachable("Inavlid cmpResult value");
   }
 
   static APFloat::opStatus fromIntegral(APSInt Val,
@@ -103,33 +119,54 @@ public:
     return Status;
   }
 
+  static Floating abs(const Floating &F) {
+    APFloat V = F.F;
+    if (V.isNegative())
+      V.changeSign();
+    return Floating(V);
+  }
+
   // -------
 
-  static APFloat::opStatus add(Floating A, Floating B, llvm::RoundingMode RM,
-                               Floating *R) {
+  static APFloat::opStatus add(const Floating &A, const Floating &B,
+                               llvm::RoundingMode RM, Floating *R) {
     *R = Floating(A.F);
     return R->F.add(B.F, RM);
   }
 
-  static APFloat::opStatus sub(Floating A, Floating B, llvm::RoundingMode RM,
-                               Floating *R) {
+  static APFloat::opStatus increment(const Floating &A, llvm::RoundingMode RM,
+                                     Floating *R) {
+    APFloat One(A.F.getSemantics(), 1);
+    *R = Floating(A.F);
+    return R->F.add(One, RM);
+  }
+
+  static APFloat::opStatus sub(const Floating &A, const Floating &B,
+                               llvm::RoundingMode RM, Floating *R) {
     *R = Floating(A.F);
     return R->F.subtract(B.F, RM);
   }
 
-  static APFloat::opStatus mul(Floating A, Floating B, llvm::RoundingMode RM,
-                               Floating *R) {
+  static APFloat::opStatus decrement(const Floating &A, llvm::RoundingMode RM,
+                                     Floating *R) {
+    APFloat One(A.F.getSemantics(), 1);
+    *R = Floating(A.F);
+    return R->F.subtract(One, RM);
+  }
+
+  static APFloat::opStatus mul(const Floating &A, const Floating &B,
+                               llvm::RoundingMode RM, Floating *R) {
     *R = Floating(A.F);
     return R->F.multiply(B.F, RM);
   }
 
-  static APFloat::opStatus div(Floating A, Floating B, llvm::RoundingMode RM,
-                               Floating *R) {
+  static APFloat::opStatus div(const Floating &A, const Floating &B,
+                               llvm::RoundingMode RM, Floating *R) {
     *R = Floating(A.F);
     return R->F.divide(B.F, RM);
   }
 
-  static bool neg(Floating A, Floating *R) {
+  static bool neg(const Floating &A, Floating *R) {
     *R = -A;
     return false;
   }

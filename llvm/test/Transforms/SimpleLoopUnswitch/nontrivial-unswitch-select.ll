@@ -11,8 +11,8 @@ define i32 @basic(i32 %N, i1 %cond, i32 %select_input) {
 ; CHECK-LABEL: define i32 @basic
 ; CHECK-SAME: (i32 [[N:%.*]], i1 [[COND:%.*]], i32 [[SELECT_INPUT:%.*]]) {
 ; CHECK-NEXT:  entry:
-; CHECK-NEXT:    [[COND_FR1:%.*]] = freeze i1 [[COND]]
-; CHECK-NEXT:    br i1 [[COND_FR1]], label [[ENTRY_SPLIT_US:%.*]], label [[ENTRY_SPLIT:%.*]]
+; CHECK-NEXT:    [[COND_FR:%.*]] = freeze i1 [[COND]]
+; CHECK-NEXT:    br i1 [[COND_FR]], label [[ENTRY_SPLIT_US:%.*]], label [[ENTRY_SPLIT:%.*]]
 ; CHECK:       entry.split.us:
 ; CHECK-NEXT:    br label [[FOR_COND_US:%.*]]
 ; CHECK:       for.cond.us:
@@ -21,7 +21,6 @@ define i32 @basic(i32 %N, i1 %cond, i32 %select_input) {
 ; CHECK-NEXT:    [[CMP_US:%.*]] = icmp slt i32 [[I_US]], [[N]]
 ; CHECK-NEXT:    br i1 [[CMP_US]], label [[FOR_BODY_US:%.*]], label [[FOR_COND_CLEANUP_SPLIT_US:%.*]]
 ; CHECK:       for.body.us:
-; CHECK-NEXT:    [[COND_FR_US:%.*]] = freeze i1 true
 ; CHECK-NEXT:    br label [[TMP0:%.*]]
 ; CHECK:       0:
 ; CHECK-NEXT:    br label [[TMP1]]
@@ -41,7 +40,6 @@ define i32 @basic(i32 %N, i1 %cond, i32 %select_input) {
 ; CHECK-NEXT:    [[CMP:%.*]] = icmp slt i32 [[I]], [[N]]
 ; CHECK-NEXT:    br i1 [[CMP]], label [[FOR_BODY:%.*]], label [[FOR_COND_CLEANUP_SPLIT:%.*]]
 ; CHECK:       for.body:
-; CHECK-NEXT:    [[COND_FR:%.*]] = freeze i1 false
 ; CHECK-NEXT:    br label [[TMP2]]
 ; CHECK:       2:
 ; CHECK-NEXT:    [[ADD]] = add nuw nsw i32 42, [[RES]]
@@ -117,8 +115,8 @@ define i32 @select_phi_input(i32 %N, i1 %cond) {
 ; CHECK-LABEL: define i32 @select_phi_input
 ; CHECK-SAME: (i32 [[N:%.*]], i1 [[COND:%.*]]) {
 ; CHECK-NEXT:  entry:
-; CHECK-NEXT:    [[COND_FR1:%.*]] = freeze i1 [[COND]]
-; CHECK-NEXT:    br i1 [[COND_FR1]], label [[ENTRY_SPLIT_US:%.*]], label [[ENTRY_SPLIT:%.*]]
+; CHECK-NEXT:    [[COND_FR:%.*]] = freeze i1 [[COND]]
+; CHECK-NEXT:    br i1 [[COND_FR]], label [[ENTRY_SPLIT_US:%.*]], label [[ENTRY_SPLIT:%.*]]
 ; CHECK:       entry.split.us:
 ; CHECK-NEXT:    br label [[FOR_COND_US:%.*]]
 ; CHECK:       for.cond.us:
@@ -127,7 +125,6 @@ define i32 @select_phi_input(i32 %N, i1 %cond) {
 ; CHECK-NEXT:    [[CMP_US:%.*]] = icmp slt i32 [[I_US]], [[N]]
 ; CHECK-NEXT:    br i1 [[CMP_US]], label [[FOR_BODY_US:%.*]], label [[FOR_COND_CLEANUP_SPLIT_US:%.*]]
 ; CHECK:       for.body.us:
-; CHECK-NEXT:    [[COND_FR_US:%.*]] = freeze i1 true
 ; CHECK-NEXT:    br label [[TMP0:%.*]]
 ; CHECK:       0:
 ; CHECK-NEXT:    br label [[TMP1]]
@@ -147,7 +144,6 @@ define i32 @select_phi_input(i32 %N, i1 %cond) {
 ; CHECK-NEXT:    [[CMP:%.*]] = icmp slt i32 [[I]], [[N]]
 ; CHECK-NEXT:    br i1 [[CMP]], label [[FOR_BODY:%.*]], label [[FOR_COND_CLEANUP_SPLIT:%.*]]
 ; CHECK:       for.body:
-; CHECK-NEXT:    [[COND_FR:%.*]] = freeze i1 false
 ; CHECK-NEXT:    br label [[TMP2]]
 ; CHECK:       2:
 ; CHECK-NEXT:    [[ADD]] = add nuw nsw i32 42, [[RES]]
@@ -286,11 +282,11 @@ define i32 @chained_select(i32 %N, i1 %cond, i1 %cond2) {
 ; CHECK-LABEL: define i32 @chained_select
 ; CHECK-SAME: (i32 [[N:%.*]], i1 [[COND:%.*]], i1 [[COND2:%.*]]) {
 ; CHECK-NEXT:  entry:
-; CHECK-NEXT:    [[COND_FR1:%.*]] = freeze i1 [[COND]]
-; CHECK-NEXT:    br i1 [[COND_FR1]], label [[ENTRY_SPLIT_US:%.*]], label [[ENTRY_SPLIT:%.*]]
+; CHECK-NEXT:    [[COND_FR:%.*]] = freeze i1 [[COND]]
+; CHECK-NEXT:    br i1 [[COND_FR]], label [[ENTRY_SPLIT_US:%.*]], label [[ENTRY_SPLIT:%.*]]
 ; CHECK:       entry.split.us:
-; CHECK-NEXT:    [[COND2_FR17:%.*]] = freeze i1 [[COND2]]
-; CHECK-NEXT:    br i1 [[COND2_FR17]], label [[ENTRY_SPLIT_US_SPLIT_US:%.*]], label [[ENTRY_SPLIT_US_SPLIT:%.*]]
+; CHECK-NEXT:    [[COND2_FR13:%.*]] = freeze i1 [[COND2]]
+; CHECK-NEXT:    br i1 [[COND2_FR13]], label [[ENTRY_SPLIT_US_SPLIT_US:%.*]], label [[ENTRY_SPLIT_US_SPLIT:%.*]]
 ; CHECK:       entry.split.us.split.us:
 ; CHECK-NEXT:    br label [[FOR_COND_US_US:%.*]]
 ; CHECK:       for.cond.us.us:
@@ -299,19 +295,17 @@ define i32 @chained_select(i32 %N, i1 %cond, i1 %cond2) {
 ; CHECK-NEXT:    [[CMP_US_US:%.*]] = icmp slt i32 [[I_US_US]], [[N]]
 ; CHECK-NEXT:    br i1 [[CMP_US_US]], label [[FOR_BODY_US_US:%.*]], label [[FOR_COND_CLEANUP_SPLIT_US_SPLIT_US:%.*]]
 ; CHECK:       for.body.us.us:
-; CHECK-NEXT:    [[COND_FR_US_US:%.*]] = freeze i1 true
 ; CHECK-NEXT:    br label [[TMP0:%.*]]
 ; CHECK:       0:
 ; CHECK-NEXT:    br label [[TMP1:%.*]]
 ; CHECK:       1:
 ; CHECK-NEXT:    [[UNSWITCHED_SELECT_US_US:%.*]] = phi i32 [ [[I_US_US]], [[TMP0]] ]
-; CHECK-NEXT:    [[COND2_FR14_US:%.*]] = freeze i1 true
 ; CHECK-NEXT:    br label [[TMP2:%.*]]
 ; CHECK:       2:
 ; CHECK-NEXT:    br label [[TMP3]]
 ; CHECK:       3:
-; CHECK-NEXT:    [[UNSWITCHED_SELECT_US15:%.*]] = phi i32 [ [[UNSWITCHED_SELECT_US_US]], [[TMP2]] ]
-; CHECK-NEXT:    [[ADD_US_US]] = add nuw nsw i32 [[UNSWITCHED_SELECT_US15]], [[RES_US_US]]
+; CHECK-NEXT:    [[UNSWITCHED_SELECT_US11:%.*]] = phi i32 [ [[UNSWITCHED_SELECT_US_US]], [[TMP2]] ]
+; CHECK-NEXT:    [[ADD_US_US]] = add nuw nsw i32 [[UNSWITCHED_SELECT_US11]], [[RES_US_US]]
 ; CHECK-NEXT:    [[INC_US_US]] = add nuw nsw i32 [[I_US_US]], 1
 ; CHECK-NEXT:    br label [[FOR_COND_US_US]]
 ; CHECK:       for.cond.cleanup.split.us.split.us:
@@ -325,13 +319,11 @@ define i32 @chained_select(i32 %N, i1 %cond, i1 %cond2) {
 ; CHECK-NEXT:    [[CMP_US:%.*]] = icmp slt i32 [[I_US]], [[N]]
 ; CHECK-NEXT:    br i1 [[CMP_US]], label [[FOR_BODY_US:%.*]], label [[FOR_COND_CLEANUP_SPLIT_US_SPLIT:%.*]]
 ; CHECK:       for.body.us:
-; CHECK-NEXT:    [[COND_FR_US:%.*]] = freeze i1 true
 ; CHECK-NEXT:    br label [[TMP4:%.*]]
 ; CHECK:       4:
 ; CHECK-NEXT:    br label [[TMP5:%.*]]
 ; CHECK:       5:
 ; CHECK-NEXT:    [[UNSWITCHED_SELECT_US:%.*]] = phi i32 [ [[I_US]], [[TMP4]] ]
-; CHECK-NEXT:    [[COND2_FR14:%.*]] = freeze i1 false
 ; CHECK-NEXT:    br label [[TMP6]]
 ; CHECK:       6:
 ; CHECK-NEXT:    [[ADD_US]] = add nuw nsw i32 24, [[RES_US]]
@@ -341,33 +333,31 @@ define i32 @chained_select(i32 %N, i1 %cond, i1 %cond2) {
 ; CHECK-NEXT:    [[RES_LCSSA_US:%.*]] = phi i32 [ [[RES_US]], [[FOR_COND_US]] ]
 ; CHECK-NEXT:    br label [[FOR_COND_CLEANUP_SPLIT_US]]
 ; CHECK:       for.cond.cleanup.split.us:
-; CHECK-NEXT:    [[DOTUS_PHI16:%.*]] = phi i32 [ [[RES_LCSSA_US]], [[FOR_COND_CLEANUP_SPLIT_US_SPLIT]] ], [ [[RES_LCSSA_US_US]], [[FOR_COND_CLEANUP_SPLIT_US_SPLIT_US]] ]
+; CHECK-NEXT:    [[DOTUS_PHI12:%.*]] = phi i32 [ [[RES_LCSSA_US]], [[FOR_COND_CLEANUP_SPLIT_US_SPLIT]] ], [ [[RES_LCSSA_US_US]], [[FOR_COND_CLEANUP_SPLIT_US_SPLIT_US]] ]
 ; CHECK-NEXT:    br label [[FOR_COND_CLEANUP:%.*]]
 ; CHECK:       entry.split:
-; CHECK-NEXT:    [[COND2_FR13:%.*]] = freeze i1 [[COND2]]
-; CHECK-NEXT:    br i1 [[COND2_FR13]], label [[ENTRY_SPLIT_SPLIT_US:%.*]], label [[ENTRY_SPLIT_SPLIT:%.*]]
+; CHECK-NEXT:    [[COND2_FR:%.*]] = freeze i1 [[COND2]]
+; CHECK-NEXT:    br i1 [[COND2_FR]], label [[ENTRY_SPLIT_SPLIT_US:%.*]], label [[ENTRY_SPLIT_SPLIT:%.*]]
 ; CHECK:       entry.split.split.us:
-; CHECK-NEXT:    br label [[FOR_COND_US2:%.*]]
-; CHECK:       for.cond.us2:
-; CHECK-NEXT:    [[RES_US3:%.*]] = phi i32 [ 0, [[ENTRY_SPLIT_SPLIT_US]] ], [ [[ADD_US9:%.*]], [[TMP9:%.*]] ]
-; CHECK-NEXT:    [[I_US4:%.*]] = phi i32 [ 0, [[ENTRY_SPLIT_SPLIT_US]] ], [ [[INC_US10:%.*]], [[TMP9]] ]
-; CHECK-NEXT:    [[CMP_US5:%.*]] = icmp slt i32 [[I_US4]], [[N]]
-; CHECK-NEXT:    br i1 [[CMP_US5]], label [[FOR_BODY_US6:%.*]], label [[FOR_COND_CLEANUP_SPLIT_SPLIT_US:%.*]]
-; CHECK:       for.body.us6:
-; CHECK-NEXT:    [[COND_FR_US7:%.*]] = freeze i1 false
+; CHECK-NEXT:    br label [[FOR_COND_US1:%.*]]
+; CHECK:       for.cond.us1:
+; CHECK-NEXT:    [[RES_US2:%.*]] = phi i32 [ 0, [[ENTRY_SPLIT_SPLIT_US]] ], [ [[ADD_US7:%.*]], [[TMP9:%.*]] ]
+; CHECK-NEXT:    [[I_US3:%.*]] = phi i32 [ 0, [[ENTRY_SPLIT_SPLIT_US]] ], [ [[INC_US8:%.*]], [[TMP9]] ]
+; CHECK-NEXT:    [[CMP_US4:%.*]] = icmp slt i32 [[I_US3]], [[N]]
+; CHECK-NEXT:    br i1 [[CMP_US4]], label [[FOR_BODY_US5:%.*]], label [[FOR_COND_CLEANUP_SPLIT_SPLIT_US:%.*]]
+; CHECK:       for.body.us5:
 ; CHECK-NEXT:    br label [[TMP7:%.*]]
 ; CHECK:       7:
-; CHECK-NEXT:    [[COND2_FR_US:%.*]] = freeze i1 true
 ; CHECK-NEXT:    br label [[TMP8:%.*]]
 ; CHECK:       8:
 ; CHECK-NEXT:    br label [[TMP9]]
 ; CHECK:       9:
-; CHECK-NEXT:    [[UNSWITCHED_SELECT_US8:%.*]] = phi i32 [ 42, [[TMP8]] ]
-; CHECK-NEXT:    [[ADD_US9]] = add nuw nsw i32 [[UNSWITCHED_SELECT_US8]], [[RES_US3]]
-; CHECK-NEXT:    [[INC_US10]] = add nuw nsw i32 [[I_US4]], 1
-; CHECK-NEXT:    br label [[FOR_COND_US2]]
+; CHECK-NEXT:    [[UNSWITCHED_SELECT_US6:%.*]] = phi i32 [ 42, [[TMP8]] ]
+; CHECK-NEXT:    [[ADD_US7]] = add nuw nsw i32 [[UNSWITCHED_SELECT_US6]], [[RES_US2]]
+; CHECK-NEXT:    [[INC_US8]] = add nuw nsw i32 [[I_US3]], 1
+; CHECK-NEXT:    br label [[FOR_COND_US1]]
 ; CHECK:       for.cond.cleanup.split.split.us:
-; CHECK-NEXT:    [[RES_LCSSA_US11:%.*]] = phi i32 [ [[RES_US3]], [[FOR_COND_US2]] ]
+; CHECK-NEXT:    [[RES_LCSSA_US9:%.*]] = phi i32 [ [[RES_US2]], [[FOR_COND_US1]] ]
 ; CHECK-NEXT:    br label [[FOR_COND_CLEANUP_SPLIT:%.*]]
 ; CHECK:       entry.split.split:
 ; CHECK-NEXT:    br label [[FOR_COND:%.*]]
@@ -377,10 +367,8 @@ define i32 @chained_select(i32 %N, i1 %cond, i1 %cond2) {
 ; CHECK-NEXT:    [[CMP:%.*]] = icmp slt i32 [[I]], [[N]]
 ; CHECK-NEXT:    br i1 [[CMP]], label [[FOR_BODY:%.*]], label [[FOR_COND_CLEANUP_SPLIT_SPLIT:%.*]]
 ; CHECK:       for.body:
-; CHECK-NEXT:    [[COND_FR:%.*]] = freeze i1 false
 ; CHECK-NEXT:    br label [[TMP10:%.*]]
 ; CHECK:       10:
-; CHECK-NEXT:    [[COND2_FR:%.*]] = freeze i1 false
 ; CHECK-NEXT:    br label [[TMP11]]
 ; CHECK:       11:
 ; CHECK-NEXT:    [[ADD]] = add nuw nsw i32 24, [[RES]]
@@ -390,10 +378,10 @@ define i32 @chained_select(i32 %N, i1 %cond, i1 %cond2) {
 ; CHECK-NEXT:    [[RES_LCSSA:%.*]] = phi i32 [ [[RES]], [[FOR_COND]] ]
 ; CHECK-NEXT:    br label [[FOR_COND_CLEANUP_SPLIT]]
 ; CHECK:       for.cond.cleanup.split:
-; CHECK-NEXT:    [[DOTUS_PHI12:%.*]] = phi i32 [ [[RES_LCSSA]], [[FOR_COND_CLEANUP_SPLIT_SPLIT]] ], [ [[RES_LCSSA_US11]], [[FOR_COND_CLEANUP_SPLIT_SPLIT_US]] ]
+; CHECK-NEXT:    [[DOTUS_PHI10:%.*]] = phi i32 [ [[RES_LCSSA]], [[FOR_COND_CLEANUP_SPLIT_SPLIT]] ], [ [[RES_LCSSA_US9]], [[FOR_COND_CLEANUP_SPLIT_SPLIT_US]] ]
 ; CHECK-NEXT:    br label [[FOR_COND_CLEANUP]]
 ; CHECK:       for.cond.cleanup:
-; CHECK-NEXT:    [[DOTUS_PHI:%.*]] = phi i32 [ [[DOTUS_PHI12]], [[FOR_COND_CLEANUP_SPLIT]] ], [ [[DOTUS_PHI16]], [[FOR_COND_CLEANUP_SPLIT_US]] ]
+; CHECK-NEXT:    [[DOTUS_PHI:%.*]] = phi i32 [ [[DOTUS_PHI10]], [[FOR_COND_CLEANUP_SPLIT]] ], [ [[DOTUS_PHI12]], [[FOR_COND_CLEANUP_SPLIT_US]] ]
 ; CHECK-NEXT:    ret i32 [[DOTUS_PHI]]
 ;
 entry:
@@ -420,8 +408,8 @@ define i32 @select_in_if(i32 %N, i1 %cond) {
 ; CHECK-LABEL: define i32 @select_in_if
 ; CHECK-SAME: (i32 [[N:%.*]], i1 [[COND:%.*]]) {
 ; CHECK-NEXT:  entry:
-; CHECK-NEXT:    [[COND_FR1:%.*]] = freeze i1 [[COND]]
-; CHECK-NEXT:    br i1 [[COND_FR1]], label [[ENTRY_SPLIT_US:%.*]], label [[ENTRY_SPLIT:%.*]]
+; CHECK-NEXT:    [[COND_FR:%.*]] = freeze i1 [[COND]]
+; CHECK-NEXT:    br i1 [[COND_FR]], label [[ENTRY_SPLIT_US:%.*]], label [[ENTRY_SPLIT:%.*]]
 ; CHECK:       entry.split.us:
 ; CHECK-NEXT:    br label [[FOR_COND_US:%.*]]
 ; CHECK:       for.cond.us:
@@ -434,7 +422,6 @@ define i32 @select_in_if(i32 %N, i1 %cond) {
 ; CHECK-NEXT:    [[IF_COND_US:%.*]] = icmp eq i32 [[UREM_US]], 0
 ; CHECK-NEXT:    br i1 [[IF_COND_US]], label [[FOR_BODY_IF_US:%.*]], label [[FOR_BODY_END_US]]
 ; CHECK:       for.body.if.us:
-; CHECK-NEXT:    [[COND_FR_US:%.*]] = freeze i1 true
 ; CHECK-NEXT:    br label [[TMP0:%.*]]
 ; CHECK:       for.body.end.us:
 ; CHECK-NEXT:    [[P_US:%.*]] = phi i32 [ [[UNSWITCHED_SELECT_US:%.*]], [[TMP1:%.*]] ], [ 24, [[FOR_BODY_US]] ]
@@ -461,7 +448,6 @@ define i32 @select_in_if(i32 %N, i1 %cond) {
 ; CHECK-NEXT:    [[IF_COND:%.*]] = icmp eq i32 [[UREM]], 0
 ; CHECK-NEXT:    br i1 [[IF_COND]], label [[FOR_BODY_IF:%.*]], label [[FOR_BODY_END]]
 ; CHECK:       for.body.if:
-; CHECK-NEXT:    [[COND_FR:%.*]] = freeze i1 false
 ; CHECK-NEXT:    br label [[TMP2:%.*]]
 ; CHECK:       2:
 ; CHECK-NEXT:    br label [[FOR_BODY_END]]
@@ -509,8 +495,8 @@ define i32 @select_in_if_else(i32 %N, i1 %cond) {
 ; CHECK-LABEL: define i32 @select_in_if_else
 ; CHECK-SAME: (i32 [[N:%.*]], i1 [[COND:%.*]]) {
 ; CHECK-NEXT:  entry:
-; CHECK-NEXT:    [[COND_FR1:%.*]] = freeze i1 [[COND]]
-; CHECK-NEXT:    br i1 [[COND_FR1]], label [[ENTRY_SPLIT_US:%.*]], label [[ENTRY_SPLIT:%.*]]
+; CHECK-NEXT:    [[COND_FR:%.*]] = freeze i1 [[COND]]
+; CHECK-NEXT:    br i1 [[COND_FR]], label [[ENTRY_SPLIT_US:%.*]], label [[ENTRY_SPLIT:%.*]]
 ; CHECK:       entry.split.us:
 ; CHECK-NEXT:    br label [[FOR_COND_US:%.*]]
 ; CHECK:       for.cond.us:
@@ -523,7 +509,6 @@ define i32 @select_in_if_else(i32 %N, i1 %cond) {
 ; CHECK-NEXT:    [[IF_COND_US:%.*]] = icmp eq i32 [[UREM_US]], 0
 ; CHECK-NEXT:    br i1 [[IF_COND_US]], label [[FOR_BODY_IF_US:%.*]], label [[FOR_BODY_ELSE_US:%.*]]
 ; CHECK:       for.body.else.us:
-; CHECK-NEXT:    [[COND_FR_US:%.*]] = freeze i1 true
 ; CHECK-NEXT:    br label [[TMP0:%.*]]
 ; CHECK:       for.body.if.us:
 ; CHECK-NEXT:    [[COND1A_US:%.*]] = select i1 true, i32 [[I_US]], i32 42
@@ -556,7 +541,6 @@ define i32 @select_in_if_else(i32 %N, i1 %cond) {
 ; CHECK-NEXT:    [[COND1A:%.*]] = select i1 false, i32 [[I]], i32 42
 ; CHECK-NEXT:    br label [[FOR_BODY_END]]
 ; CHECK:       for.body.else:
-; CHECK-NEXT:    [[COND_FR:%.*]] = freeze i1 false
 ; CHECK-NEXT:    br label [[TMP2:%.*]]
 ; CHECK:       2:
 ; CHECK-NEXT:    br label [[FOR_BODY_END]]
@@ -709,12 +693,12 @@ define dso_local void @select_invariant_outer_loop(i1 noundef zeroext %cond, i32
 ; CHECK-NEXT:    [[I_021_US:%.*]] = phi i32 [ [[INC9_US:%.*]], [[FOR_COND1_FOR_COND_CLEANUP3_CRIT_EDGE_US:%.*]] ], [ 0, [[FOR_COND1_PREHEADER_US_PREHEADER]] ]
 ; CHECK-NEXT:    [[REM_US:%.*]] = and i32 [[I_021_US]], 1
 ; CHECK-NEXT:    [[CMP5_US:%.*]] = icmp eq i32 [[REM_US]], 0
-; CHECK-NEXT:    br i1 [[CMP5_US]], label [[FOR_COND1_PREHEADER_US_SPLIT_US:%.*]], label [[FOR_COND1_PREHEADER_US_SPLIT:%.*]]
+; CHECK-NEXT:    [[CMP5_US_FR:%.*]] = freeze i1 [[CMP5_US]]
+; CHECK-NEXT:    br i1 [[CMP5_US_FR]], label [[FOR_COND1_PREHEADER_US_SPLIT_US:%.*]], label [[FOR_COND1_PREHEADER_US_SPLIT:%.*]]
 ; CHECK:       for.cond1.preheader.us.split.us:
 ; CHECK-NEXT:    br label [[FOR_BODY4_US_US:%.*]]
 ; CHECK:       for.body4.us.us:
 ; CHECK-NEXT:    [[J_019_US_US:%.*]] = phi i32 [ 0, [[FOR_COND1_PREHEADER_US_SPLIT_US]] ], [ [[INC_US_US:%.*]], [[TMP1:%.*]] ]
-; CHECK-NEXT:    [[CMP5_US_FR_US:%.*]] = freeze i1 true
 ; CHECK-NEXT:    br label [[TMP0:%.*]]
 ; CHECK:       0:
 ; CHECK-NEXT:    br label [[TMP1]]
@@ -730,7 +714,6 @@ define dso_local void @select_invariant_outer_loop(i1 noundef zeroext %cond, i32
 ; CHECK-NEXT:    br label [[FOR_BODY4_US:%.*]]
 ; CHECK:       for.body4.us:
 ; CHECK-NEXT:    [[J_019_US:%.*]] = phi i32 [ 0, [[FOR_COND1_PREHEADER_US_SPLIT]] ], [ [[INC_US:%.*]], [[TMP2:%.*]] ]
-; CHECK-NEXT:    [[CMP5_US_FR:%.*]] = freeze i1 false
 ; CHECK-NEXT:    br label [[TMP2]]
 ; CHECK:       2:
 ; CHECK-NEXT:    tail call void @bar(i32 noundef [[J_019_US]])
@@ -775,4 +758,327 @@ for.cond1.for.cond.cleanup3_crit_edge.us:         ; preds = %for.body4.us
 
 for.cond.cleanup:                                 ; preds = %for.cond1.for.cond.cleanup3_crit_edge.us, %entry
   ret void
+}
+
+; Unswitch %val should look through the trivial select and unswitch on %cond
+define dso_local i32 @trivial_select_cond(i32 noundef %n, i32 noundef %a, i32 noundef %b, i1 noundef %cond) {
+; CHECK-LABEL: define dso_local i32 @trivial_select_cond
+; CHECK-SAME: (i32 noundef [[N:%.*]], i32 noundef [[A:%.*]], i32 noundef [[B:%.*]], i1 noundef [[COND:%.*]]) {
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    [[CMP2:%.*]] = icmp sgt i32 [[N]], 0
+; CHECK-NEXT:    [[TRIVIAL_COND:%.*]] = select i1 [[COND]], i1 true, i1 false
+; CHECK-NEXT:    br i1 [[CMP2]], label [[FOR_BODY_PREHEADER:%.*]], label [[FOR_COND_CLEANUP:%.*]]
+; CHECK:       for.body.preheader:
+; CHECK-NEXT:    br i1 [[COND]], label [[FOR_BODY_PREHEADER_SPLIT_US:%.*]], label [[FOR_BODY_PREHEADER_SPLIT:%.*]]
+; CHECK:       for.body.preheader.split.us:
+; CHECK-NEXT:    br label [[FOR_BODY_US:%.*]]
+; CHECK:       for.body.us:
+; CHECK-NEXT:    [[I_03_US:%.*]] = phi i32 [ [[INC_US:%.*]], [[TMP1:%.*]] ], [ 0, [[FOR_BODY_PREHEADER_SPLIT_US]] ]
+; CHECK-NEXT:    br label [[TMP0:%.*]]
+; CHECK:       0:
+; CHECK-NEXT:    br label [[TMP1]]
+; CHECK:       1:
+; CHECK-NEXT:    [[UNSWITCHED_SELECT_US:%.*]] = phi i32 [ [[A]], [[TMP0]] ]
+; CHECK-NEXT:    tail call void @bar(i32 noundef [[UNSWITCHED_SELECT_US]])
+; CHECK-NEXT:    [[INC_US]] = add nuw nsw i32 [[I_03_US]], 1
+; CHECK-NEXT:    [[EXITCOND_NOT_US:%.*]] = icmp eq i32 [[INC_US]], [[N]]
+; CHECK-NEXT:    br i1 [[EXITCOND_NOT_US]], label [[FOR_COND_CLEANUP_LOOPEXIT_SPLIT_US:%.*]], label [[FOR_BODY_US]]
+; CHECK:       for.cond.cleanup.loopexit.split.us:
+; CHECK-NEXT:    br label [[FOR_COND_CLEANUP_LOOPEXIT:%.*]]
+; CHECK:       for.body.preheader.split:
+; CHECK-NEXT:    br label [[FOR_BODY:%.*]]
+; CHECK:       for.cond.cleanup.loopexit.split:
+; CHECK-NEXT:    br label [[FOR_COND_CLEANUP_LOOPEXIT]]
+; CHECK:       for.cond.cleanup.loopexit:
+; CHECK-NEXT:    br label [[FOR_COND_CLEANUP]]
+; CHECK:       for.cond.cleanup:
+; CHECK-NEXT:    ret i32 undef
+; CHECK:       for.body:
+; CHECK-NEXT:    [[I_03:%.*]] = phi i32 [ [[INC:%.*]], [[TMP2:%.*]] ], [ 0, [[FOR_BODY_PREHEADER_SPLIT]] ]
+; CHECK-NEXT:    br label [[TMP2]]
+; CHECK:       2:
+; CHECK-NEXT:    tail call void @bar(i32 noundef [[B]])
+; CHECK-NEXT:    [[INC]] = add nuw nsw i32 [[I_03]], 1
+; CHECK-NEXT:    [[EXITCOND_NOT:%.*]] = icmp eq i32 [[INC]], [[N]]
+; CHECK-NEXT:    br i1 [[EXITCOND_NOT]], label [[FOR_COND_CLEANUP_LOOPEXIT_SPLIT:%.*]], label [[FOR_BODY]]
+;
+entry:
+  %cmp2 = icmp sgt i32 %n, 0
+  %trivial_cond = select i1 %cond, i1 true, i1 false
+  br i1 %cmp2, label %for.body, label %for.cond.cleanup
+
+for.cond.cleanup:                                 ; preds = %for.body, %entry
+  ret i32 undef
+
+for.body:                                         ; preds = %entry, %for.body
+  %i.03 = phi i32 [ %inc, %for.body ], [ 0, %entry ]
+  %val = select i1 %trivial_cond, i32 %a, i32 %b
+  tail call void @bar(i32 noundef %val)
+  %inc = add nuw nsw i32 %i.03, 1
+  %exitcond.not = icmp eq i32 %inc, %n
+  br i1 %exitcond.not, label %for.cond.cleanup, label %for.body
+}
+
+; Test unswitch select when the condition is an AND whose LHS is invariant
+define i32 @and_lhs_invariant(i32 %num, i1 %cond) {
+; CHECK-LABEL: define i32 @and_lhs_invariant
+; CHECK-SAME: (i32 [[NUM:%.*]], i1 [[COND:%.*]]) {
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    [[CMP6:%.*]] = icmp sgt i32 [[NUM]], 0
+; CHECK-NEXT:    br i1 [[CMP6]], label [[FOR_BODY_PREHEADER:%.*]], label [[FOR_COND_CLEANUP:%.*]]
+; CHECK:       for.body.preheader:
+; CHECK-NEXT:    [[COND_FR:%.*]] = freeze i1 [[COND]]
+; CHECK-NEXT:    br i1 [[COND_FR]], label [[FOR_BODY_PREHEADER_SPLIT:%.*]], label [[FOR_BODY_PREHEADER_SPLIT_US:%.*]]
+; CHECK:       for.body.preheader.split.us:
+; CHECK-NEXT:    br label [[FOR_BODY_US:%.*]]
+; CHECK:       for.body.us:
+; CHECK-NEXT:    [[I_07_US:%.*]] = phi i32 [ [[INC_US:%.*]], [[TMP0:%.*]] ], [ 0, [[FOR_BODY_PREHEADER_SPLIT_US]] ]
+; CHECK-NEXT:    br label [[TMP0]]
+; CHECK:       0:
+; CHECK-NEXT:    [[UNSWITCHED_SELECT_US:%.*]] = phi i32 [ 0, [[FOR_BODY_US]] ]
+; CHECK-NEXT:    tail call void @bar(i32 noundef [[UNSWITCHED_SELECT_US]])
+; CHECK-NEXT:    [[INC_US]] = add nuw nsw i32 [[I_07_US]], 1
+; CHECK-NEXT:    [[EXITCOND_NOT_US:%.*]] = icmp eq i32 [[INC_US]], [[NUM]]
+; CHECK-NEXT:    br i1 [[EXITCOND_NOT_US]], label [[FOR_COND_CLEANUP_LOOPEXIT_SPLIT_US:%.*]], label [[FOR_BODY_US]]
+; CHECK:       for.cond.cleanup.loopexit.split.us:
+; CHECK-NEXT:    br label [[FOR_COND_CLEANUP_LOOPEXIT:%.*]]
+; CHECK:       for.body.preheader.split:
+; CHECK-NEXT:    br label [[FOR_BODY:%.*]]
+; CHECK:       for.cond.cleanup.loopexit.split:
+; CHECK-NEXT:    br label [[FOR_COND_CLEANUP_LOOPEXIT]]
+; CHECK:       for.cond.cleanup.loopexit:
+; CHECK-NEXT:    br label [[FOR_COND_CLEANUP]]
+; CHECK:       for.cond.cleanup:
+; CHECK-NEXT:    ret i32 undef
+; CHECK:       for.body:
+; CHECK-NEXT:    [[I_07:%.*]] = phi i32 [ [[INC:%.*]], [[TMP3:%.*]] ], [ 0, [[FOR_BODY_PREHEADER_SPLIT]] ]
+; CHECK-NEXT:    [[REM:%.*]] = and i32 [[I_07]], 1
+; CHECK-NEXT:    [[CMP1:%.*]] = icmp eq i32 [[REM]], 0
+; CHECK-NEXT:    [[TMP1:%.*]] = and i1 true, [[CMP1]]
+; CHECK-NEXT:    br i1 [[TMP1]], label [[TMP2:%.*]], label [[TMP3]]
+; CHECK:       2:
+; CHECK-NEXT:    br label [[TMP3]]
+; CHECK:       3:
+; CHECK-NEXT:    [[UNSWITCHED_SELECT:%.*]] = phi i32 [ [[I_07]], [[TMP2]] ], [ 0, [[FOR_BODY]] ]
+; CHECK-NEXT:    tail call void @bar(i32 noundef [[UNSWITCHED_SELECT]])
+; CHECK-NEXT:    [[INC]] = add nuw nsw i32 [[I_07]], 1
+; CHECK-NEXT:    [[EXITCOND_NOT:%.*]] = icmp eq i32 [[INC]], [[NUM]]
+; CHECK-NEXT:    br i1 [[EXITCOND_NOT]], label [[FOR_COND_CLEANUP_LOOPEXIT_SPLIT:%.*]], label [[FOR_BODY]]
+;
+entry:
+  %cmp6 = icmp sgt i32 %num, 0
+  br i1 %cmp6, label %for.body, label %for.cond.cleanup
+
+for.cond.cleanup:                                 ; preds = %for.body, %entry
+  ret i32 undef
+
+for.body:                                         ; preds = %entry, %for.body
+  %i.07 = phi i32 [ %inc, %for.body ], [ 0, %entry ]
+  %rem = and i32 %i.07, 1
+  %cmp1 = icmp eq i32 %rem, 0
+  %0 = and i1 %cond, %cmp1
+  %cond2 = select i1 %0, i32 %i.07, i32 0
+  tail call void @bar(i32 noundef %cond2)
+  %inc = add nuw nsw i32 %i.07, 1
+  %exitcond.not = icmp eq i32 %inc, %num
+  br i1 %exitcond.not, label %for.cond.cleanup, label %for.body
+}
+
+; Test unswitch select when the condition is an AND whose RHS is invariant
+define i32 @and_rhs_invariant(i32 %num, i1 %cond) {
+; CHECK-LABEL: define i32 @and_rhs_invariant
+; CHECK-SAME: (i32 [[NUM:%.*]], i1 [[COND:%.*]]) {
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    [[CMP6:%.*]] = icmp sgt i32 [[NUM]], 0
+; CHECK-NEXT:    br i1 [[CMP6]], label [[FOR_BODY_PREHEADER:%.*]], label [[FOR_COND_CLEANUP:%.*]]
+; CHECK:       for.body.preheader:
+; CHECK-NEXT:    [[COND_FR:%.*]] = freeze i1 [[COND]]
+; CHECK-NEXT:    br i1 [[COND_FR]], label [[FOR_BODY_PREHEADER_SPLIT:%.*]], label [[FOR_BODY_PREHEADER_SPLIT_US:%.*]]
+; CHECK:       for.body.preheader.split.us:
+; CHECK-NEXT:    br label [[FOR_BODY_US:%.*]]
+; CHECK:       for.body.us:
+; CHECK-NEXT:    [[I_07_US:%.*]] = phi i32 [ [[INC_US:%.*]], [[TMP0:%.*]] ], [ 0, [[FOR_BODY_PREHEADER_SPLIT_US]] ]
+; CHECK-NEXT:    br label [[TMP0]]
+; CHECK:       0:
+; CHECK-NEXT:    [[UNSWITCHED_SELECT_US:%.*]] = phi i32 [ 0, [[FOR_BODY_US]] ]
+; CHECK-NEXT:    tail call void @bar(i32 noundef [[UNSWITCHED_SELECT_US]])
+; CHECK-NEXT:    [[INC_US]] = add nuw nsw i32 [[I_07_US]], 1
+; CHECK-NEXT:    [[EXITCOND_NOT_US:%.*]] = icmp eq i32 [[INC_US]], [[NUM]]
+; CHECK-NEXT:    br i1 [[EXITCOND_NOT_US]], label [[FOR_COND_CLEANUP_LOOPEXIT_SPLIT_US:%.*]], label [[FOR_BODY_US]]
+; CHECK:       for.cond.cleanup.loopexit.split.us:
+; CHECK-NEXT:    br label [[FOR_COND_CLEANUP_LOOPEXIT:%.*]]
+; CHECK:       for.body.preheader.split:
+; CHECK-NEXT:    br label [[FOR_BODY:%.*]]
+; CHECK:       for.cond.cleanup.loopexit.split:
+; CHECK-NEXT:    br label [[FOR_COND_CLEANUP_LOOPEXIT]]
+; CHECK:       for.cond.cleanup.loopexit:
+; CHECK-NEXT:    br label [[FOR_COND_CLEANUP]]
+; CHECK:       for.cond.cleanup:
+; CHECK-NEXT:    ret i32 undef
+; CHECK:       for.body:
+; CHECK-NEXT:    [[I_07:%.*]] = phi i32 [ [[INC:%.*]], [[TMP3:%.*]] ], [ 0, [[FOR_BODY_PREHEADER_SPLIT]] ]
+; CHECK-NEXT:    [[REM:%.*]] = and i32 [[I_07]], 1
+; CHECK-NEXT:    [[CMP1:%.*]] = icmp eq i32 [[REM]], 0
+; CHECK-NEXT:    [[TMP1:%.*]] = and i1 [[CMP1]], true
+; CHECK-NEXT:    br i1 [[TMP1]], label [[TMP2:%.*]], label [[TMP3]]
+; CHECK:       2:
+; CHECK-NEXT:    br label [[TMP3]]
+; CHECK:       3:
+; CHECK-NEXT:    [[UNSWITCHED_SELECT:%.*]] = phi i32 [ [[I_07]], [[TMP2]] ], [ 0, [[FOR_BODY]] ]
+; CHECK-NEXT:    tail call void @bar(i32 noundef [[UNSWITCHED_SELECT]])
+; CHECK-NEXT:    [[INC]] = add nuw nsw i32 [[I_07]], 1
+; CHECK-NEXT:    [[EXITCOND_NOT:%.*]] = icmp eq i32 [[INC]], [[NUM]]
+; CHECK-NEXT:    br i1 [[EXITCOND_NOT]], label [[FOR_COND_CLEANUP_LOOPEXIT_SPLIT:%.*]], label [[FOR_BODY]]
+;
+entry:
+  %cmp6 = icmp sgt i32 %num, 0
+  br i1 %cmp6, label %for.body, label %for.cond.cleanup
+
+for.cond.cleanup:                                 ; preds = %for.body, %entry
+  ret i32 undef
+
+for.body:                                         ; preds = %entry, %for.body
+  %i.07 = phi i32 [ %inc, %for.body ], [ 0, %entry ]
+  %rem = and i32 %i.07, 1
+  %cmp1 = icmp eq i32 %rem, 0
+  %0 = and i1 %cmp1, %cond
+  %cond2 = select i1 %0, i32 %i.07, i32 0
+  tail call void @bar(i32 noundef %cond2)
+  %inc = add nuw nsw i32 %i.07, 1
+  %exitcond.not = icmp eq i32 %inc, %num
+  br i1 %exitcond.not, label %for.cond.cleanup, label %for.body
+}
+
+; Test unswitch select when the condition is an OR whose LHS is invariant
+define i32 @or_lhs_invariant(i32 %num, i1 %cond) {
+; CHECK-LABEL: define i32 @or_lhs_invariant
+; CHECK-SAME: (i32 [[NUM:%.*]], i1 [[COND:%.*]]) {
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    [[CMP6:%.*]] = icmp sgt i32 [[NUM]], 0
+; CHECK-NEXT:    br i1 [[CMP6]], label [[FOR_BODY_PREHEADER:%.*]], label [[FOR_COND_CLEANUP:%.*]]
+; CHECK:       for.body.preheader:
+; CHECK-NEXT:    [[COND_FR:%.*]] = freeze i1 [[COND]]
+; CHECK-NEXT:    br i1 [[COND_FR]], label [[FOR_BODY_PREHEADER_SPLIT_US:%.*]], label [[FOR_BODY_PREHEADER_SPLIT:%.*]]
+; CHECK:       for.body.preheader.split.us:
+; CHECK-NEXT:    br label [[FOR_BODY_US:%.*]]
+; CHECK:       for.body.us:
+; CHECK-NEXT:    [[I_07_US:%.*]] = phi i32 [ [[INC_US:%.*]], [[TMP1:%.*]] ], [ 0, [[FOR_BODY_PREHEADER_SPLIT_US]] ]
+; CHECK-NEXT:    br label [[TMP0:%.*]]
+; CHECK:       0:
+; CHECK-NEXT:    br label [[TMP1]]
+; CHECK:       1:
+; CHECK-NEXT:    [[UNSWITCHED_SELECT_US:%.*]] = phi i32 [ [[I_07_US]], [[TMP0]] ]
+; CHECK-NEXT:    tail call void @bar(i32 noundef [[UNSWITCHED_SELECT_US]])
+; CHECK-NEXT:    [[INC_US]] = add nuw nsw i32 [[I_07_US]], 1
+; CHECK-NEXT:    [[EXITCOND_NOT_US:%.*]] = icmp eq i32 [[INC_US]], [[NUM]]
+; CHECK-NEXT:    br i1 [[EXITCOND_NOT_US]], label [[FOR_COND_CLEANUP_LOOPEXIT_SPLIT_US:%.*]], label [[FOR_BODY_US]]
+; CHECK:       for.cond.cleanup.loopexit.split.us:
+; CHECK-NEXT:    br label [[FOR_COND_CLEANUP_LOOPEXIT:%.*]]
+; CHECK:       for.body.preheader.split:
+; CHECK-NEXT:    br label [[FOR_BODY:%.*]]
+; CHECK:       for.cond.cleanup.loopexit.split:
+; CHECK-NEXT:    br label [[FOR_COND_CLEANUP_LOOPEXIT]]
+; CHECK:       for.cond.cleanup.loopexit:
+; CHECK-NEXT:    br label [[FOR_COND_CLEANUP]]
+; CHECK:       for.cond.cleanup:
+; CHECK-NEXT:    ret i32 undef
+; CHECK:       for.body:
+; CHECK-NEXT:    [[I_07:%.*]] = phi i32 [ [[INC:%.*]], [[TMP4:%.*]] ], [ 0, [[FOR_BODY_PREHEADER_SPLIT]] ]
+; CHECK-NEXT:    [[REM:%.*]] = and i32 [[I_07]], 1
+; CHECK-NEXT:    [[CMP1:%.*]] = icmp eq i32 [[REM]], 0
+; CHECK-NEXT:    [[TMP2:%.*]] = or i1 false, [[CMP1]]
+; CHECK-NEXT:    br i1 [[TMP2]], label [[TMP3:%.*]], label [[TMP4]]
+; CHECK:       3:
+; CHECK-NEXT:    br label [[TMP4]]
+; CHECK:       4:
+; CHECK-NEXT:    [[UNSWITCHED_SELECT:%.*]] = phi i32 [ [[I_07]], [[TMP3]] ], [ 0, [[FOR_BODY]] ]
+; CHECK-NEXT:    tail call void @bar(i32 noundef [[UNSWITCHED_SELECT]])
+; CHECK-NEXT:    [[INC]] = add nuw nsw i32 [[I_07]], 1
+; CHECK-NEXT:    [[EXITCOND_NOT:%.*]] = icmp eq i32 [[INC]], [[NUM]]
+; CHECK-NEXT:    br i1 [[EXITCOND_NOT]], label [[FOR_COND_CLEANUP_LOOPEXIT_SPLIT:%.*]], label [[FOR_BODY]]
+;
+entry:
+  %cmp6 = icmp sgt i32 %num, 0
+  br i1 %cmp6, label %for.body, label %for.cond.cleanup
+
+for.cond.cleanup:                                 ; preds = %for.body, %entry
+  ret i32 undef
+
+for.body:                                         ; preds = %entry, %for.body
+  %i.07 = phi i32 [ %inc, %for.body ], [ 0, %entry ]
+  %rem = and i32 %i.07, 1
+  %cmp1 = icmp eq i32 %rem, 0
+  %0 = or i1 %cond, %cmp1
+  %cond2 = select i1 %0, i32 %i.07, i32 0
+  tail call void @bar(i32 noundef %cond2)
+  %inc = add nuw nsw i32 %i.07, 1
+  %exitcond.not = icmp eq i32 %inc, %num
+  br i1 %exitcond.not, label %for.cond.cleanup, label %for.body
+}
+
+; Test unswitch select when the condition is an OR whose RHS is invariant
+define i32 @or_rhs_invariant(i32 %num, i1 %cond) {
+; CHECK-LABEL: define i32 @or_rhs_invariant
+; CHECK-SAME: (i32 [[NUM:%.*]], i1 [[COND:%.*]]) {
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    [[CMP6:%.*]] = icmp sgt i32 [[NUM]], 0
+; CHECK-NEXT:    br i1 [[CMP6]], label [[FOR_BODY_PREHEADER:%.*]], label [[FOR_COND_CLEANUP:%.*]]
+; CHECK:       for.body.preheader:
+; CHECK-NEXT:    [[COND_FR:%.*]] = freeze i1 [[COND]]
+; CHECK-NEXT:    br i1 [[COND_FR]], label [[FOR_BODY_PREHEADER_SPLIT_US:%.*]], label [[FOR_BODY_PREHEADER_SPLIT:%.*]]
+; CHECK:       for.body.preheader.split.us:
+; CHECK-NEXT:    br label [[FOR_BODY_US:%.*]]
+; CHECK:       for.body.us:
+; CHECK-NEXT:    [[I_07_US:%.*]] = phi i32 [ [[INC_US:%.*]], [[TMP1:%.*]] ], [ 0, [[FOR_BODY_PREHEADER_SPLIT_US]] ]
+; CHECK-NEXT:    br label [[TMP0:%.*]]
+; CHECK:       0:
+; CHECK-NEXT:    br label [[TMP1]]
+; CHECK:       1:
+; CHECK-NEXT:    [[UNSWITCHED_SELECT_US:%.*]] = phi i32 [ [[I_07_US]], [[TMP0]] ]
+; CHECK-NEXT:    tail call void @bar(i32 noundef [[UNSWITCHED_SELECT_US]])
+; CHECK-NEXT:    [[INC_US]] = add nuw nsw i32 [[I_07_US]], 1
+; CHECK-NEXT:    [[EXITCOND_NOT_US:%.*]] = icmp eq i32 [[INC_US]], [[NUM]]
+; CHECK-NEXT:    br i1 [[EXITCOND_NOT_US]], label [[FOR_COND_CLEANUP_LOOPEXIT_SPLIT_US:%.*]], label [[FOR_BODY_US]]
+; CHECK:       for.cond.cleanup.loopexit.split.us:
+; CHECK-NEXT:    br label [[FOR_COND_CLEANUP_LOOPEXIT:%.*]]
+; CHECK:       for.body.preheader.split:
+; CHECK-NEXT:    br label [[FOR_BODY:%.*]]
+; CHECK:       for.cond.cleanup.loopexit.split:
+; CHECK-NEXT:    br label [[FOR_COND_CLEANUP_LOOPEXIT]]
+; CHECK:       for.cond.cleanup.loopexit:
+; CHECK-NEXT:    br label [[FOR_COND_CLEANUP]]
+; CHECK:       for.cond.cleanup:
+; CHECK-NEXT:    ret i32 undef
+; CHECK:       for.body:
+; CHECK-NEXT:    [[I_07:%.*]] = phi i32 [ [[INC:%.*]], [[TMP4:%.*]] ], [ 0, [[FOR_BODY_PREHEADER_SPLIT]] ]
+; CHECK-NEXT:    [[REM:%.*]] = and i32 [[I_07]], 1
+; CHECK-NEXT:    [[CMP1:%.*]] = icmp eq i32 [[REM]], 0
+; CHECK-NEXT:    [[TMP2:%.*]] = or i1 [[CMP1]], false
+; CHECK-NEXT:    br i1 [[TMP2]], label [[TMP3:%.*]], label [[TMP4]]
+; CHECK:       3:
+; CHECK-NEXT:    br label [[TMP4]]
+; CHECK:       4:
+; CHECK-NEXT:    [[UNSWITCHED_SELECT:%.*]] = phi i32 [ [[I_07]], [[TMP3]] ], [ 0, [[FOR_BODY]] ]
+; CHECK-NEXT:    tail call void @bar(i32 noundef [[UNSWITCHED_SELECT]])
+; CHECK-NEXT:    [[INC]] = add nuw nsw i32 [[I_07]], 1
+; CHECK-NEXT:    [[EXITCOND_NOT:%.*]] = icmp eq i32 [[INC]], [[NUM]]
+; CHECK-NEXT:    br i1 [[EXITCOND_NOT]], label [[FOR_COND_CLEANUP_LOOPEXIT_SPLIT:%.*]], label [[FOR_BODY]]
+;
+entry:
+  %cmp6 = icmp sgt i32 %num, 0
+  br i1 %cmp6, label %for.body, label %for.cond.cleanup
+
+for.cond.cleanup:                                 ; preds = %for.body, %entry
+  ret i32 undef
+
+for.body:                                         ; preds = %entry, %for.body
+  %i.07 = phi i32 [ %inc, %for.body ], [ 0, %entry ]
+  %rem = and i32 %i.07, 1
+  %cmp1 = icmp eq i32 %rem, 0
+  %0 = or i1 %cmp1, %cond
+  %cond2 = select i1 %0, i32 %i.07, i32 0
+  tail call void @bar(i32 noundef %cond2)
+  %inc = add nuw nsw i32 %i.07, 1
+  %exitcond.not = icmp eq i32 %inc, %num
+  br i1 %exitcond.not, label %for.cond.cleanup, label %for.body
 }

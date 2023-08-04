@@ -53,6 +53,18 @@ using FPToSIOpLowering =
     VectorConvertToLLVMPattern<arith::FPToSIOp, LLVM::FPToSIOp>;
 using FPToUIOpLowering =
     VectorConvertToLLVMPattern<arith::FPToUIOp, LLVM::FPToUIOp>;
+template <typename SourceOp, typename TargetOp>
+// FPClass bitmask for -inf (bit 2) and +inf (bit 9).
+using InfKinds =
+    arith::AttrConvertAddFpclassKinds<(1 << 2) | (1 << 9), SourceOp, TargetOp>;
+using IsInfLowering =
+    VectorConvertToLLVMPattern<arith::IsInfOp, LLVM::IsFPClass, InfKinds>;
+// FPClass bitmask for signalling NaN (bit 0) or quiet NaN (bit 1).
+template <typename SourceOp, typename TargetOp>
+using NanKinds =
+    arith::AttrConvertAddFpclassKinds<(1 << 0) | (1 << 1), SourceOp, TargetOp>;
+using IsNanLowering =
+    VectorConvertToLLVMPattern<arith::IsNanOp, LLVM::IsFPClass, NanKinds>;
 using MaxFOpLowering =
     VectorConvertToLLVMPattern<arith::MaxFOp, LLVM::MaxNumOp,
                                arith::AttrConvertFastMathToLLVM>;
@@ -210,7 +222,7 @@ LogicalResult IndexCastOpLowering<OpTy, ExtCastTy>::matchAndRewrite(
 
   // Handle the scalar and 1D vector cases.
   Type operandType = adaptor.getIn().getType();
-  if (!operandType.isa<LLVM::LLVMArrayType>()) {
+  if (!isa<LLVM::LLVMArrayType>(operandType)) {
     Type targetType = this->typeConverter->convertType(resultType);
     if (targetBits < sourceBits)
       rewriter.replaceOpWithNewOp<LLVM::TruncOp>(op, targetType,
@@ -220,7 +232,7 @@ LogicalResult IndexCastOpLowering<OpTy, ExtCastTy>::matchAndRewrite(
     return success();
   }
 
-  if (!resultType.isa<VectorType>())
+  if (!isa<VectorType>(resultType))
     return rewriter.notifyMatchFailure(op, "expected vector result type");
 
   return LLVM::detail::handleMultidimensionalVectors(
@@ -255,7 +267,7 @@ LogicalResult AddUIExtendedOpLowering::matchAndRewrite(
   Location loc = op.getLoc();
 
   // Handle the scalar and 1D vector cases.
-  if (!operandType.isa<LLVM::LLVMArrayType>()) {
+  if (!isa<LLVM::LLVMArrayType>(operandType)) {
     Type newOverflowType = typeConverter->convertType(overflowResultType);
     Type structType =
         LLVM::LLVMStructType::getLiteral(ctx, {sumResultType, newOverflowType});
@@ -269,7 +281,7 @@ LogicalResult AddUIExtendedOpLowering::matchAndRewrite(
     return success();
   }
 
-  if (!sumResultType.isa<VectorType>())
+  if (!isa<VectorType>(sumResultType))
     return rewriter.notifyMatchFailure(loc, "expected vector result types");
 
   return rewriter.notifyMatchFailure(loc,
@@ -295,16 +307,16 @@ LogicalResult MulIExtendedOpLowering<ArithMulOp, IsSigned>::matchAndRewrite(
   // matching extended multiplication intrinsic, perform regular multiplication
   // on operands zero-extended to i(2*N) bits, and truncate the results back to
   // iN types.
-  if (!resultType.isa<LLVM::LLVMArrayType>()) {
+  if (!isa<LLVM::LLVMArrayType>(resultType)) {
     // Shift amount necessary to extract the high bits from widened result.
     TypedAttr shiftValAttr;
 
-    if (auto intTy = resultType.dyn_cast<IntegerType>()) {
+    if (auto intTy = dyn_cast<IntegerType>(resultType)) {
       unsigned resultBitwidth = intTy.getWidth();
       auto attrTy = rewriter.getIntegerType(resultBitwidth * 2);
       shiftValAttr = rewriter.getIntegerAttr(attrTy, resultBitwidth);
     } else {
-      auto vecTy = resultType.cast<VectorType>();
+      auto vecTy = cast<VectorType>(resultType);
       unsigned resultBitwidth = vecTy.getElementTypeBitWidth();
       auto attrTy = VectorType::get(
           vecTy.getShape(), rewriter.getIntegerType(resultBitwidth * 2));
@@ -330,7 +342,7 @@ LogicalResult MulIExtendedOpLowering<ArithMulOp, IsSigned>::matchAndRewrite(
     return success();
   }
 
-  if (!resultType.isa<VectorType>())
+  if (!isa<VectorType>(resultType))
     return rewriter.notifyMatchFailure(op, "expected vector result type");
 
   return rewriter.notifyMatchFailure(op,
@@ -355,7 +367,7 @@ CmpIOpLowering::matchAndRewrite(arith::CmpIOp op, OpAdaptor adaptor,
   Type resultType = op.getResult().getType();
 
   // Handle the scalar and 1D vector cases.
-  if (!operandType.isa<LLVM::LLVMArrayType>()) {
+  if (!isa<LLVM::LLVMArrayType>(operandType)) {
     rewriter.replaceOpWithNewOp<LLVM::ICmpOp>(
         op, typeConverter->convertType(resultType),
         convertCmpPredicate<LLVM::ICmpPredicate>(op.getPredicate()),
@@ -363,7 +375,7 @@ CmpIOpLowering::matchAndRewrite(arith::CmpIOp op, OpAdaptor adaptor,
     return success();
   }
 
-  if (!resultType.isa<VectorType>())
+  if (!isa<VectorType>(resultType))
     return rewriter.notifyMatchFailure(op, "expected vector result type");
 
   return LLVM::detail::handleMultidimensionalVectors(
@@ -389,7 +401,7 @@ CmpFOpLowering::matchAndRewrite(arith::CmpFOp op, OpAdaptor adaptor,
   Type resultType = op.getResult().getType();
 
   // Handle the scalar and 1D vector cases.
-  if (!operandType.isa<LLVM::LLVMArrayType>()) {
+  if (!isa<LLVM::LLVMArrayType>(operandType)) {
     rewriter.replaceOpWithNewOp<LLVM::FCmpOp>(
         op, typeConverter->convertType(resultType),
         convertCmpPredicate<LLVM::FCmpPredicate>(op.getPredicate()),
@@ -397,7 +409,7 @@ CmpFOpLowering::matchAndRewrite(arith::CmpFOp op, OpAdaptor adaptor,
     return success();
   }
 
-  if (!resultType.isa<VectorType>())
+  if (!isa<VectorType>(resultType))
     return rewriter.notifyMatchFailure(op, "expected vector result type");
 
   return LLVM::detail::handleMultidimensionalVectors(
@@ -465,6 +477,8 @@ void mlir::arith::populateArithToLLVMConversionPatterns(
     FPToUIOpLowering,
     IndexCastOpSILowering,
     IndexCastOpUILowering,
+    IsInfLowering,
+    IsNanLowering,
     MaxFOpLowering,
     MaxSIOpLowering,
     MaxUIOpLowering,

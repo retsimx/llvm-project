@@ -10,6 +10,7 @@
 #define LLVM_LIBC_SRC_SUPPORT_GPU_AMDGPU_IO_H
 
 #include "src/__support/common.h"
+#include "src/__support/macros/config.h"
 
 #include <stdint.h>
 
@@ -18,6 +19,12 @@ namespace gpu {
 
 /// The number of threads that execute in lock-step in a lane.
 constexpr const uint64_t LANE_SIZE = __AMDGCN_WAVEFRONT_SIZE;
+
+/// Type aliases to the address spaces used by the AMDGPU backend.
+template <typename T> using Private = [[clang::opencl_private]] T;
+template <typename T> using Constant = [[clang::opencl_constant]] T;
+template <typename T> using Local = [[clang::opencl_local]] T;
+template <typename T> using Global = [[clang::opencl_global]] T;
 
 /// Returns the number of workgroups in the 'x' dimension of the grid.
 LIBC_INLINE uint32_t get_num_blocks_x() {
@@ -106,7 +113,7 @@ LIBC_INLINE uint32_t get_lane_size() { return LANE_SIZE; }
 
 /// Returns the id of the thread inside of an AMD wavefront executing together.
 [[clang::convergent]] LIBC_INLINE uint32_t get_lane_id() {
-  if (LANE_SIZE == 64)
+  if constexpr (LANE_SIZE == 64)
     return __builtin_amdgcn_mbcnt_hi(~0u, __builtin_amdgcn_mbcnt_lo(~0u, 0u));
   else
     return __builtin_amdgcn_mbcnt_lo(~0u, 0u);
@@ -122,6 +129,17 @@ LIBC_INLINE uint32_t get_lane_size() { return LANE_SIZE; }
   return __builtin_amdgcn_readfirstlane(x);
 }
 
+/// Returns a bitmask of threads in the current lane for which \p x is true.
+[[clang::convergent]] LIBC_INLINE uint64_t ballot(uint64_t lane_mask, bool x) {
+  // the lane_mask & gives the nvptx semantics when lane_mask is a subset of
+  // the active threads
+  if constexpr (LANE_SIZE == 64) {
+    return lane_mask & __builtin_amdgcn_ballot_w64(x);
+  } else {
+    return lane_mask & __builtin_amdgcn_ballot_w32(x);
+  }
+}
+
 /// Waits for all the threads in the block to converge and issues a fence.
 [[clang::convergent]] LIBC_INLINE void sync_threads() {
   __builtin_amdgcn_s_barrier();
@@ -131,6 +149,30 @@ LIBC_INLINE uint32_t get_lane_size() { return LANE_SIZE; }
 /// Wait for all threads in the wavefront to converge, this is a noop on AMDGPU.
 [[clang::convergent]] LIBC_INLINE void sync_lane(uint64_t) {
   __builtin_amdgcn_wave_barrier();
+}
+
+/// Returns the current value of the GPU's processor clock.
+/// NOTE: The RDNA3 and RDNA2 architectures use a 20-bit cycle cycle counter.
+LIBC_INLINE uint64_t processor_clock() {
+  if constexpr (LIBC_HAS_BUILTIN(__builtin_amdgcn_s_memtime))
+    return __builtin_amdgcn_s_memtime();
+  else if constexpr (LIBC_HAS_BUILTIN(__builtin_readcyclecounter))
+    return __builtin_readcyclecounter();
+  else
+    return 0;
+}
+
+/// Returns a fixed-frequency timestamp. The actual frequency is dependent on
+/// the card and can only be queried via the driver.
+LIBC_INLINE uint64_t fixed_frequency_clock() {
+  if constexpr (LIBC_HAS_BUILTIN(__builtin_amdgcn_s_sendmsg_rtnl))
+    return __builtin_amdgcn_s_sendmsg_rtnl(0x83);
+  else if constexpr (LIBC_HAS_BUILTIN(__builtin_amdgcn_s_memrealtime))
+    return __builtin_amdgcn_s_memrealtime();
+  else if constexpr (LIBC_HAS_BUILTIN(__builtin_amdgcn_s_memtime))
+    return __builtin_amdgcn_s_memtime();
+  else
+    return 0;
 }
 
 } // namespace gpu

@@ -389,7 +389,8 @@ DeclarationFragmentsBuilder::getFragmentsForVar(const VarDecl *Var) {
   return Fragments.append(getFragmentsForType(T, Var->getASTContext(), After))
       .appendSpace()
       .append(Var->getName(), DeclarationFragments::FragmentKind::Identifier)
-      .append(std::move(After));
+      .append(std::move(After))
+      .append(";", DeclarationFragments::FragmentKind::Text);
 }
 
 DeclarationFragments
@@ -457,7 +458,7 @@ DeclarationFragmentsBuilder::getFragmentsForFunction(const FunctionDecl *Func) {
   Fragments.append(")", DeclarationFragments::FragmentKind::Text);
 
   // FIXME: Handle exception specifiers: throw, noexcept
-  return Fragments;
+  return Fragments.append(";", DeclarationFragments::FragmentKind::Text);
 }
 
 DeclarationFragments DeclarationFragmentsBuilder::getFragmentsForEnumConstant(
@@ -495,7 +496,8 @@ DeclarationFragmentsBuilder::getFragmentsForField(const FieldDecl *Field) {
   return getFragmentsForType(Field->getType(), Field->getASTContext(), After)
       .appendSpace()
       .append(Field->getName(), DeclarationFragments::FragmentKind::Identifier)
-      .append(std::move(After));
+      .append(std::move(After))
+      .append(";", DeclarationFragments::FragmentKind::Text);
 }
 
 DeclarationFragments

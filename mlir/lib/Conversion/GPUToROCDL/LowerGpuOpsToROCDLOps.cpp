@@ -54,12 +54,44 @@ using namespace mlir;
 static bool canBeCalledWithBarePointers(gpu::GPUFuncOp func) {
   bool canBeBare = true;
   for (Type type : func.getArgumentTypes())
-    if (auto memrefTy = type.dyn_cast<BaseMemRefType>())
+    if (auto memrefTy = dyn_cast<BaseMemRefType>(type))
       canBeBare &= LLVMTypeConverter::canConvertToBarePtr(memrefTy);
   return canBeBare;
 }
 
 namespace {
+struct GPULaneIdOpToROCDL : ConvertOpToLLVMPattern<gpu::LaneIdOp> {
+  using ConvertOpToLLVMPattern<gpu::LaneIdOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(gpu::LaneIdOp op, gpu::LaneIdOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *context = rewriter.getContext();
+    // convert to:  %mlo = call @llvm.amdgcn.mbcnt.lo(-1, 0)
+    // followed by: %lid = call @llvm.amdgcn.mbcnt.hi(-1, %mlo)
+
+    Type intTy = IntegerType::get(context, 32);
+    Value zero = rewriter.createOrFold<arith::ConstantIntOp>(loc, 0, 32);
+    Value minus1 = rewriter.createOrFold<arith::ConstantIntOp>(loc, -1, 32);
+    Value mbcntLo =
+        rewriter.create<ROCDL::MbcntLoOp>(loc, intTy, ValueRange{minus1, zero});
+    Value laneId = rewriter.create<ROCDL::MbcntHiOp>(
+        loc, intTy, ValueRange{minus1, mbcntLo});
+    // Truncate or extend the result depending on the index bitwidth specified
+    // by the LLVMTypeConverter options.
+    const unsigned indexBitwidth = getTypeConverter()->getIndexTypeBitwidth();
+    if (indexBitwidth > 32) {
+      laneId = rewriter.create<LLVM::SExtOp>(
+          loc, IntegerType::get(context, indexBitwidth), laneId);
+    } else if (indexBitwidth < 32) {
+      laneId = rewriter.create<LLVM::TruncOp>(
+          loc, IntegerType::get(context, indexBitwidth), laneId);
+    }
+    rewriter.replaceOp(op, {laneId});
+    return success();
+  }
+};
 
 /// Import the GPU Ops to ROCDL Patterns.
 #include "GPUToROCDL.cpp.inc"
@@ -166,9 +198,8 @@ struct LowerGpuOpsToROCDLOpsPass
     // Manually rewrite known block size attributes so the LLVMIR translation
     // infrastructure can pick them up.
     m.walk([ctx](LLVM::LLVMFuncOp op) {
-      if (auto blockSizes =
-              op->removeAttr(gpu::GPUFuncOp::getKnownBlockSizeAttrName())
-                  .dyn_cast_or_null<DenseI32ArrayAttr>()) {
+      if (auto blockSizes = dyn_cast_or_null<DenseI32ArrayAttr>(
+              op->removeAttr(gpu::GPUFuncOp::getKnownBlockSizeAttrName()))) {
         op->setAttr(ROCDL::ROCDLDialect::getReqdWorkGroupSizeAttrName(),
                     blockSizes);
         // Also set up the rocdl.flat_work_group_size attribute to prevent
@@ -241,6 +272,8 @@ void mlir::populateGpuToROCDLConversionPatterns(
     patterns.add<GPUPrintfOpToLLVMCallLowering>(converter, /*addressSpace=*/4);
   }
 
+  patterns.add<GPULaneIdOpToROCDL>(converter);
+
   populateOpPatterns<math::AbsFOp>(converter, patterns, "__ocml_fabs_f32",
                                    "__ocml_fabs_f64");
   populateOpPatterns<math::AtanOp>(converter, patterns, "__ocml_atan_f32",
@@ -281,6 +314,8 @@ void mlir::populateGpuToROCDLConversionPatterns(
                                    "__ocml_tanh_f64");
   populateOpPatterns<math::TanOp>(converter, patterns, "__ocml_tan_f32",
                                   "__ocml_tan_f64");
+  populateOpPatterns<math::ErfOp>(converter, patterns, "__ocml_erf_f32",
+                                  "__ocml_erf_f64");
 }
 
 std::unique_ptr<OperationPass<gpu::GPUModuleOp>>
