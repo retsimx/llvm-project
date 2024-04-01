@@ -86,15 +86,12 @@ template <> struct IRTraits<BasicBlock> {
 // SampleProfileProber.
 class PseudoProbeManager {
   DenseMap<uint64_t, PseudoProbeDescriptor> GUIDToProbeDescMap;
-
-  const PseudoProbeDescriptor *getDesc(const Function &F) const {
-    auto I = GUIDToProbeDescMap.find(
-        Function::getGUID(FunctionSamples::getCanonicalFnName(F)));
-    return I == GUIDToProbeDescMap.end() ? nullptr : &I->second;
-  }
+  const ThinOrFullLTOPhase LTOPhase;
 
 public:
-  PseudoProbeManager(const Module &M) {
+  PseudoProbeManager(const Module &M,
+                     ThinOrFullLTOPhase LTOPhase = ThinOrFullLTOPhase::None)
+      : LTOPhase(LTOPhase) {
     if (NamedMDNode *FuncInfo =
             M.getNamedMetadata(PseudoProbeDescMetadataName)) {
       for (const auto *Operand : FuncInfo->operands()) {
@@ -108,29 +105,50 @@ public:
     }
   }
 
+  const PseudoProbeDescriptor *getDesc(uint64_t GUID) const {
+    auto I = GUIDToProbeDescMap.find(GUID);
+    return I == GUIDToProbeDescMap.end() ? nullptr : &I->second;
+  }
+
+  const PseudoProbeDescriptor *getDesc(StringRef FProfileName) const {
+    return getDesc(Function::getGUID(FProfileName));
+  }
+
+  const PseudoProbeDescriptor *getDesc(const Function &F) const {
+    return getDesc(Function::getGUID(FunctionSamples::getCanonicalFnName(F)));
+  }
+
+  bool profileIsHashMismatched(const PseudoProbeDescriptor &FuncDesc,
+                               const FunctionSamples &Samples) const {
+    return FuncDesc.getFunctionHash() != Samples.getFunctionHash();
+  }
+
   bool moduleIsProbed(const Module &M) const {
     return M.getNamedMetadata(PseudoProbeDescMetadataName);
   }
 
   bool profileIsValid(const Function &F, const FunctionSamples &Samples) const {
     const auto *Desc = getDesc(F);
-    if (!Desc) {
-      LLVM_DEBUG(dbgs() << "Probe descriptor missing for Function "
-                        << F.getName() << "\n");
-      return false;
-    }
-    if (Desc->getFunctionHash() != Samples.getFunctionHash()) {
-      LLVM_DEBUG(dbgs() << "Hash mismatch for Function " << F.getName()
-                        << "\n");
-      return false;
-    }
-    return true;
+    assert((LTOPhase != ThinOrFullLTOPhase::ThinLTOPostLink || !Desc ||
+            profileIsHashMismatched(*Desc, Samples) ==
+                F.hasFnAttribute("profile-checksum-mismatch")) &&
+           "In post-link, profile checksum matching state doesn't match "
+           "function 'profile-checksum-mismatch' attribute.");
+    (void)LTOPhase;
+    // The desc for import function is unavailable. Check the function attribute
+    // for mismatch.
+    return (!Desc && !F.hasFnAttribute("profile-checksum-mismatch")) ||
+           (Desc && !profileIsHashMismatched(*Desc, Samples));
   }
 };
 
 
 
 extern cl::opt<bool> SampleProfileUseProfi;
+
+static inline bool skipProfileForFunction(const Function &F) {
+  return F.isDeclaration() || !F.hasFnAttribute("use-sample-profile");
+}
 
 template <typename FT> class SampleProfileLoaderBaseImpl {
 public:
@@ -140,7 +158,7 @@ public:
   void dump() { Reader->dump(); }
 
   using NodeRef = typename GraphTraits<FT *>::NodeRef;
-  using BT = typename std::remove_pointer<NodeRef>::type;
+  using BT = std::remove_pointer_t<NodeRef>;
   using InstructionT = typename afdo_detail::IRTraits<BT>::InstructionT;
   using BasicBlockT = typename afdo_detail::IRTraits<BT>::BasicBlockT;
   using BlockFrequencyInfoT =
@@ -264,6 +282,11 @@ protected:
 
   /// Profile reader object.
   std::unique_ptr<SampleProfileReader> Reader;
+
+  /// Synthetic samples created by duplicating the samples of inlined functions
+  /// from the original profile as if they were top level sample profiles.
+  /// Use std::map because insertion may happen while its content is referenced.
+  std::map<SampleContext, FunctionSamples> OutlineFunctionSamples;
 
   // A pseudo probe helper to correlate the imported sample counts.
   std::unique_ptr<PseudoProbeManager> ProbeManager;

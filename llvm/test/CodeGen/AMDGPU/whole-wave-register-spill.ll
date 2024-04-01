@@ -27,7 +27,7 @@ define void @test() #0 {
 ; GCN-NEXT:    v_writelane_b32 v40, s28, 2
 ; GCN-NEXT:    v_writelane_b32 v40, s29, 3
 ; GCN-NEXT:    v_writelane_b32 v40, s16, 4
-; GCN-NEXT:    ; implicit-def: $vgpr0
+; GCN-NEXT:    ; implicit-def: $vgpr0 : SGPR spill to VGPR lane
 ; GCN-NEXT:    v_writelane_b32 v40, s30, 0
 ; GCN-NEXT:    s_addk_i32 s32, 0x800
 ; GCN-NEXT:    v_writelane_b32 v40, s31, 1
@@ -83,7 +83,7 @@ define void @test() #0 {
 ; GCN-O0-NEXT:    v_writelane_b32 v40, s29, 3
 ; GCN-O0-NEXT:    v_writelane_b32 v40, s16, 4
 ; GCN-O0-NEXT:    s_add_i32 s32, s32, 0x400
-; GCN-O0-NEXT:    ; implicit-def: $vgpr0
+; GCN-O0-NEXT:    ; implicit-def: $vgpr0 : SGPR spill to VGPR lane
 ; GCN-O0-NEXT:    v_writelane_b32 v40, s30, 0
 ; GCN-O0-NEXT:    v_writelane_b32 v40, s31, 1
 ; GCN-O0-NEXT:    ;;#ASMSTART
@@ -101,6 +101,7 @@ define void @test() #0 {
 ; GCN-O0-NEXT:    s_mov_b64 s[20:21], s[0:1]
 ; GCN-O0-NEXT:    s_mov_b64 s[0:1], s[20:21]
 ; GCN-O0-NEXT:    s_mov_b64 s[2:3], s[22:23]
+; GCN-O0-NEXT:    ; implicit-def: $sgpr18_sgpr19
 ; GCN-O0-NEXT:    s_waitcnt lgkmcnt(0)
 ; GCN-O0-NEXT:    s_swappc_b64 s[30:31], s[16:17]
 ; GCN-O0-NEXT:    s_or_saveexec_b64 s[28:29], -1

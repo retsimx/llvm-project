@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "IncrementalParser.h"
+
 #include "clang/AST/DeclContextInternals.h"
 #include "clang/CodeGen/BackendUtil.h"
 #include "clang/CodeGen/CodeGenAction.h"
@@ -157,15 +158,10 @@ public:
   TranslationUnitKind getTranslationUnitKind() override {
     return TU_Incremental;
   }
+
   void ExecuteAction() override {
     CompilerInstance &CI = getCompilerInstance();
     assert(CI.hasPreprocessor() && "No PP!");
-
-    // FIXME: Move the truncation aspect of this into Sema, we delayed this till
-    // here so the source manager would be initialized.
-    if (hasCodeCompletionSupport() &&
-        !CI.getFrontendOpts().CodeCompletionAt.FileName.empty())
-      CI.createCodeCompletionConsumer();
 
     // Use a code completion consumer?
     CodeCompleteConsumer *CompletionConsumer = nullptr;
@@ -379,16 +375,22 @@ void IncrementalParser::CleanUpPTU(PartialTranslationUnit &PTU) {
   TranslationUnitDecl *MostRecentTU = PTU.TUPart;
   TranslationUnitDecl *FirstTU = MostRecentTU->getFirstDecl();
   if (StoredDeclsMap *Map = FirstTU->getPrimaryContext()->getLookupPtr()) {
-    for (auto I = Map->begin(); I != Map->end(); ++I) {
-      StoredDeclsList &List = I->second;
+    for (auto &&[Key, List] : *Map) {
       DeclContextLookupResult R = List.getLookupResult();
+      std::vector<NamedDecl *> NamedDeclsToRemove;
+      bool RemoveAll = true;
       for (NamedDecl *D : R) {
-        if (D->getTranslationUnitDecl() == MostRecentTU) {
-          List.remove(D);
-        }
+        if (D->getTranslationUnitDecl() == MostRecentTU)
+          NamedDeclsToRemove.push_back(D);
+        else
+          RemoveAll = false;
       }
-      if (List.isNull())
-        Map->erase(I);
+      if (LLVM_LIKELY(RemoveAll)) {
+        Map->erase(Key);
+      } else {
+        for (NamedDecl *D : NamedDeclsToRemove)
+          List.remove(D);
+      }
     }
   }
 }
@@ -398,5 +400,4 @@ llvm::StringRef IncrementalParser::GetMangledName(GlobalDecl GD) const {
   assert(CG);
   return CG->GetMangledName(GD);
 }
-
 } // end namespace clang

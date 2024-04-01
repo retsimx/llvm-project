@@ -21,7 +21,6 @@
 #include "llvm/Object/BuildID.h"
 #include "llvm/ProfileData/InstrProf.h"
 #include "llvm/ProfileData/MemProf.h"
-#include "llvm/Support/Endian.h"
 #include "llvm/Support/Error.h"
 #include <cstdint>
 #include <memory>
@@ -69,10 +68,21 @@ private:
   // Use raw pointer here for the incomplete type object.
   InstrProfRecordWriterTrait *InfoObj;
 
+  // Temporary support for writing the previous version of the format, to enable
+  // some forward compatibility. Currently this suppresses the writing of the
+  // new vtable names section and header fields.
+  // TODO: Consider enabling this with future version changes as well, to ease
+  // deployment of newer versions of llvm-profdata.
+  bool WritePrevVersion = false;
+
+  // The MemProf version we should write.
+  memprof::IndexedVersion MemProfVersionRequested;
+
 public:
-  InstrProfWriter(bool Sparse = false,
-                  uint64_t TemporalProfTraceReservoirSize = 0,
-                  uint64_t MaxTemporalProfTraceLength = 0);
+  InstrProfWriter(
+      bool Sparse = false, uint64_t TemporalProfTraceReservoirSize = 0,
+      uint64_t MaxTemporalProfTraceLength = 0, bool WritePrevVersion = false,
+      memprof::IndexedVersion MemProfVersionRequested = memprof::Version0);
   ~InstrProfWriter();
 
   StringMap<ProfilingData> &getProfileData() { return FunctionData; }
@@ -169,8 +179,12 @@ public:
 
   InstrProfKind getProfileKind() const { return ProfileKind; }
 
+  bool hasSingleByteCoverage() const {
+    return static_cast<bool>(ProfileKind & InstrProfKind::SingleByteCoverage);
+  }
+
   // Internal interface for testing purpose only.
-  void setValueProfDataEndianness(support::endianness Endianness);
+  void setValueProfDataEndianness(llvm::endianness Endianness);
   void setOutputSparse(bool Sparse);
   // Compute the overlap b/w this object and Other. Program level result is
   // stored in Overlap and function level result is stored in FuncLevelOverlap.

@@ -7,11 +7,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/IR/ValueBoundsOpInterfaceImpl.h"
 #include "mlir/Dialect/Affine/Transforms/Transforms.h"
 #include "mlir/Dialect/Arith/Transforms/Transforms.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Vector/IR/ScalableValueBoundsConstraintSet.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/ValueBoundsOpInterface.h"
 #include "mlir/Pass/Pass.h"
@@ -55,7 +57,7 @@ private:
 
 } // namespace
 
-FailureOr<BoundType> parseBoundType(std::string type) {
+FailureOr<BoundType> parseBoundType(const std::string &type) {
   if (type == "EQ")
     return BoundType::EQ;
   if (type == "LB")
@@ -74,7 +76,8 @@ static LogicalResult testReifyValueBounds(func::FuncOp funcOp,
   WalkResult result = funcOp.walk([&](Operation *op) {
     // Look for test.reify_bound ops.
     if (op->getName().getStringRef() == "test.reify_bound" ||
-        op->getName().getStringRef() == "test.reify_constant_bound") {
+        op->getName().getStringRef() == "test.reify_constant_bound" ||
+        op->getName().getStringRef() == "test.reify_scalable_bound") {
       if (op->getNumOperands() != 1 || op->getNumResults() != 1 ||
           !op->getResultTypes()[0].isIndex()) {
         op->emitOpError("invalid op");
@@ -109,6 +112,9 @@ static LogicalResult testReifyValueBounds(func::FuncOp funcOp,
       bool constant =
           op->getName().getStringRef() == "test.reify_constant_bound";
 
+      bool scalable = !constant && op->getName().getStringRef() ==
+                                       "test.reify_scalable_bound";
+
       // Prepare stop condition. By default, reify in terms of the op's
       // operands. No stop condition is used when a constant was requested.
       std::function<bool(Value, std::optional<int64_t>)> stopCondition =
@@ -136,6 +142,37 @@ static LogicalResult testReifyValueBounds(func::FuncOp funcOp,
         if (succeeded(reifiedConst))
           reified =
               FailureOr<OpFoldResult>(rewriter.getIndexAttr(*reifiedConst));
+      } else if (scalable) {
+        unsigned vscaleMin = 0;
+        unsigned vscaleMax = 0;
+        if (auto attr = "vscale_min"; op->hasAttrOfType<IntegerAttr>(attr)) {
+          vscaleMin = unsigned(op->getAttrOfType<IntegerAttr>(attr).getInt());
+        } else {
+          op->emitOpError("expected `vscale_min` to be provided");
+          return WalkResult::skip();
+        }
+        if (auto attr = "vscale_max"; op->hasAttrOfType<IntegerAttr>(attr)) {
+          vscaleMax = unsigned(op->getAttrOfType<IntegerAttr>(attr).getInt());
+        } else {
+          op->emitOpError("expected `vscale_max` to be provided");
+          return WalkResult::skip();
+        }
+
+        auto loc = op->getLoc();
+        auto reifiedScalable =
+            vector::ScalableValueBoundsConstraintSet::computeScalableBound(
+                value, dim, vscaleMin, vscaleMax, *boundType);
+        if (succeeded(reifiedScalable)) {
+          SmallVector<std::pair<Value, std::optional<int64_t>>, 1>
+              vscaleOperand;
+          if (reifiedScalable->map.getNumInputs() == 1) {
+            // The only possible input to the bound is vscale.
+            vscaleOperand.push_back(std::make_pair(
+                rewriter.create<vector::VectorScaleOp>(loc), std::nullopt));
+          }
+          reified = affine::materializeComputedBound(
+              rewriter, loc, reifiedScalable->map, vscaleOperand);
+        }
       } else {
         if (dim) {
           if (useArithOps) {
@@ -186,14 +223,26 @@ static LogicalResult testEquality(func::FuncOp funcOp) {
         op->emitOpError("invalid op");
         return WalkResult::skip();
       }
-      FailureOr<bool> equal = ValueBoundsConstraintSet::areEqual(
-          op->getOperand(0), op->getOperand(1));
-      if (failed(equal)) {
-        op->emitError("could not determine equality");
-      } else if (*equal) {
-        op->emitRemark("equal");
+      if (op->hasAttr("compose")) {
+        FailureOr<int64_t> delta = affine::fullyComposeAndComputeConstantDelta(
+            op->getOperand(0), op->getOperand(1));
+        if (failed(delta)) {
+          op->emitError("could not determine equality");
+        } else if (*delta == 0) {
+          op->emitRemark("equal");
+        } else {
+          op->emitRemark("different");
+        }
       } else {
-        op->emitRemark("different");
+        FailureOr<bool> equal = ValueBoundsConstraintSet::areEqual(
+            op->getOperand(0), op->getOperand(1));
+        if (failed(equal)) {
+          op->emitError("could not determine equality");
+        } else if (*equal) {
+          op->emitRemark("equal");
+        } else {
+          op->emitRemark("different");
+        }
       }
     }
     return WalkResult::advance();

@@ -106,9 +106,9 @@ public:
   void writeTo(uint8_t *buf) override;
 
   void addConstant(const Relocation &r);
-  void addEntry(Symbol &sym);
-  bool addTlsDescEntry(Symbol &sym);
-  bool addDynTlsEntry(Symbol &sym);
+  void addEntry(const Symbol &sym);
+  bool addTlsDescEntry(const Symbol &sym);
+  bool addDynTlsEntry(const Symbol &sym);
   bool addTlsIndex();
   uint32_t getTlsDescOffset(const Symbol &sym) const;
   uint64_t getTlsDescAddr(const Symbol &sym) const;
@@ -641,7 +641,7 @@ public:
   size_t getSize() const override { return getNumSymbols() * entsize; }
   void addSymbol(Symbol *sym);
   unsigned getNumSymbols() const { return symbols.size() + 1; }
-  size_t getSymbolIndex(Symbol *sym);
+  size_t getSymbolIndex(const Symbol &sym);
   ArrayRef<SymbolTableEntry> getSymbols() const { return symbols; }
 
 protected:
@@ -776,6 +776,16 @@ public:
   void writeTo(uint8_t *Buf) override;
   bool isNeeded() const override;
   size_t getSize() const override;
+};
+
+// Used to align the end of the PT_GNU_RELRO segment and the associated PT_LOAD
+// segment to a common-page-size boundary. This padding section ensures that all
+// pages in the PT_LOAD segment is covered by at least one section.
+class RelroPaddingSection final : public SyntheticSection {
+public:
+  RelroPaddingSection();
+  size_t getSize() const override { return 0; }
+  void writeTo(uint8_t *buf) override {}
 };
 
 class GdbIndexSection final : public SyntheticSection {
@@ -1247,9 +1257,9 @@ public:
   size_t getSize() const override;
 };
 
-class MemtagDescriptors final : public SyntheticSection {
+class MemtagGlobalDescriptors final : public SyntheticSection {
 public:
-  MemtagDescriptors()
+  MemtagGlobalDescriptors()
       : SyntheticSection(llvm::ELF::SHF_ALLOC,
                          llvm::ELF::SHT_AARCH64_MEMTAG_GLOBALS_DYNAMIC,
                          /*alignment=*/4, ".memtag.globals.dynamic") {}
@@ -1305,7 +1315,7 @@ struct Partition {
   std::unique_ptr<GnuHashTableSection> gnuHashTab;
   std::unique_ptr<HashTableSection> hashTab;
   std::unique_ptr<MemtagAndroidNote> memtagAndroidNote;
-  std::unique_ptr<MemtagDescriptors> memtagDescriptors;
+  std::unique_ptr<MemtagGlobalDescriptors> memtagGlobalDescriptors;
   std::unique_ptr<PackageMetadataNote> packageMetadataNote;
   std::unique_ptr<RelocationBaseSection> relaDyn;
   std::unique_ptr<RelrBaseSection> relrDyn;
@@ -1333,6 +1343,7 @@ struct InStruct {
   std::unique_ptr<GotSection> got;
   std::unique_ptr<GotPltSection> gotPlt;
   std::unique_ptr<IgotPltSection> igotPlt;
+  std::unique_ptr<RelroPaddingSection> relroPadding;
   std::unique_ptr<SyntheticSection> armCmseSGSection;
   std::unique_ptr<PPC64LongBranchTargetSection> ppc64LongBranchTarget;
   std::unique_ptr<SyntheticSection> mipsAbiFlags;
@@ -1347,7 +1358,6 @@ struct InStruct {
   std::unique_ptr<PPC32Got2Section> ppc32Got2;
   std::unique_ptr<IBTPltSection> ibtPlt;
   std::unique_ptr<RelocationBaseSection> relaPlt;
-  std::unique_ptr<RelocationBaseSection> relaIplt;
   std::unique_ptr<StringTableSection> shStrTab;
   std::unique_ptr<StringTableSection> strTab;
   std::unique_ptr<SymbolTableBaseSection> symTab;

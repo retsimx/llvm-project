@@ -8,6 +8,7 @@
 
 #include "ABIInfoImpl.h"
 #include "TargetInfo.h"
+#include "clang/Basic/TargetOptions.h"
 
 using namespace clang;
 using namespace clang::CodeGen;
@@ -248,6 +249,12 @@ ABIArgInfo AMDGPUABIInfo::classifyArgumentType(QualType Ty,
         return ABIArgInfo::getDirect();
       }
     }
+
+    // Use pass-by-reference in stead of pass-by-value for struct arguments in
+    // function ABI.
+    return ABIArgInfo::getIndirectAliased(
+        getContext().getTypeAlignInChars(Ty),
+        getContext().getTargetAddressSpace(LangAS::opencl_private));
   }
 
   // Otherwise just do the default thing.
@@ -267,6 +274,8 @@ public:
 
   void setFunctionDeclAttributes(const FunctionDecl *FD, llvm::Function *F,
                                  CodeGenModule &CGM) const;
+
+  void emitTargetGlobals(CodeGen::CodeGenModule &CGM) const override;
 
   void setTargetAttributes(const Decl *D, llvm::GlobalValue *GV,
                            CodeGen::CodeGenModule &M) const override;
@@ -299,12 +308,13 @@ static bool requiresAMDGPUProtectedVisibility(const Decl *D,
   if (GV->getVisibility() != llvm::GlobalValue::HiddenVisibility)
     return false;
 
-  return D->hasAttr<OpenCLKernelAttr>() ||
-         (isa<FunctionDecl>(D) && D->hasAttr<CUDAGlobalAttr>()) ||
-         (isa<VarDecl>(D) &&
-          (D->hasAttr<CUDADeviceAttr>() || D->hasAttr<CUDAConstantAttr>() ||
-           cast<VarDecl>(D)->getType()->isCUDADeviceBuiltinSurfaceType() ||
-           cast<VarDecl>(D)->getType()->isCUDADeviceBuiltinTextureType()));
+  return !D->hasAttr<OMPDeclareTargetDeclAttr>() &&
+         (D->hasAttr<OpenCLKernelAttr>() ||
+          (isa<FunctionDecl>(D) && D->hasAttr<CUDAGlobalAttr>()) ||
+          (isa<VarDecl>(D) &&
+           (D->hasAttr<CUDADeviceAttr>() || D->hasAttr<CUDAConstantAttr>() ||
+            cast<VarDecl>(D)->getType()->isCUDADeviceBuiltinSurfaceType() ||
+            cast<VarDecl>(D)->getType()->isCUDADeviceBuiltinTextureType())));
 }
 
 void AMDGPUTargetCodeGenInfo::setFunctionDeclAttributes(
@@ -345,6 +355,63 @@ void AMDGPUTargetCodeGenInfo::setFunctionDeclAttributes(
 
     if (NumVGPR != 0)
       F->addFnAttr("amdgpu-num-vgpr", llvm::utostr(NumVGPR));
+  }
+
+  if (const auto *Attr = FD->getAttr<AMDGPUMaxNumWorkGroupsAttr>()) {
+    uint32_t X = Attr->getMaxNumWorkGroupsX()
+                     ->EvaluateKnownConstInt(M.getContext())
+                     .getExtValue();
+    // Y and Z dimensions default to 1 if not specified
+    uint32_t Y = Attr->getMaxNumWorkGroupsY()
+                     ? Attr->getMaxNumWorkGroupsY()
+                           ->EvaluateKnownConstInt(M.getContext())
+                           .getExtValue()
+                     : 1;
+    uint32_t Z = Attr->getMaxNumWorkGroupsZ()
+                     ? Attr->getMaxNumWorkGroupsZ()
+                           ->EvaluateKnownConstInt(M.getContext())
+                           .getExtValue()
+                     : 1;
+
+    llvm::SmallString<32> AttrVal;
+    llvm::raw_svector_ostream OS(AttrVal);
+    OS << X << ',' << Y << ',' << Z;
+
+    F->addFnAttr("amdgpu-max-num-workgroups", AttrVal.str());
+  }
+}
+
+/// Emits control constants used to change per-architecture behaviour in the
+/// AMDGPU ROCm device libraries.
+void AMDGPUTargetCodeGenInfo::emitTargetGlobals(
+    CodeGen::CodeGenModule &CGM) const {
+  StringRef Name = "__oclc_ABI_version";
+  llvm::GlobalVariable *OriginalGV = CGM.getModule().getNamedGlobal(Name);
+  if (OriginalGV && !llvm::GlobalVariable::isExternalLinkage(OriginalGV->getLinkage()))
+    return;
+
+  if (CGM.getTarget().getTargetOpts().CodeObjectVersion ==
+      llvm::CodeObjectVersionKind::COV_None)
+    return;
+
+  auto *Type = llvm::IntegerType::getIntNTy(CGM.getModule().getContext(), 32);
+  llvm::Constant *COV = llvm::ConstantInt::get(
+      Type, CGM.getTarget().getTargetOpts().CodeObjectVersion);
+
+  // It needs to be constant weak_odr without externally_initialized so that
+  // the load instuction can be eliminated by the IPSCCP.
+  auto *GV = new llvm::GlobalVariable(
+      CGM.getModule(), Type, true, llvm::GlobalValue::WeakODRLinkage, COV, Name,
+      nullptr, llvm::GlobalValue::ThreadLocalMode::NotThreadLocal,
+      CGM.getContext().getTargetAddressSpace(LangAS::opencl_constant));
+  GV->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Local);
+  GV->setVisibility(llvm::GlobalValue::VisibilityTypes::HiddenVisibility);
+
+  // Replace any external references to this variable with the new global.
+  if (OriginalGV) {
+    OriginalGV->replaceAllUsesWith(GV);
+    GV->takeName(OriginalGV);
+    OriginalGV->eraseFromParent();
   }
 }
 
@@ -407,12 +474,11 @@ AMDGPUTargetCodeGenInfo::getGlobalVarAddressSpace(CodeGenModule &CGM,
     return DefaultGlobalAS;
 
   LangAS AddrSpace = D->getType().getAddressSpace();
-  assert(AddrSpace == LangAS::Default || isTargetAddressSpace(AddrSpace));
   if (AddrSpace != LangAS::Default)
     return AddrSpace;
 
   // Only promote to address space 4 if VarDecl has constant initialization.
-  if (CGM.isTypeConstant(D->getType(), false, false) &&
+  if (D->getType().isConstantStorage(CGM.getContext(), false, false) &&
       D->hasConstantInitialization()) {
     if (auto ConstAS = CGM.getTarget().getConstantAddressSpace())
       return *ConstAS;
@@ -428,20 +494,25 @@ AMDGPUTargetCodeGenInfo::getLLVMSyncScopeID(const LangOptions &LangOpts,
   std::string Name;
   switch (Scope) {
   case SyncScope::HIPSingleThread:
+  case SyncScope::SingleScope:
     Name = "singlethread";
     break;
   case SyncScope::HIPWavefront:
   case SyncScope::OpenCLSubGroup:
+  case SyncScope::WavefrontScope:
     Name = "wavefront";
     break;
   case SyncScope::HIPWorkgroup:
   case SyncScope::OpenCLWorkGroup:
+  case SyncScope::WorkgroupScope:
     Name = "workgroup";
     break;
   case SyncScope::HIPAgent:
   case SyncScope::OpenCLDevice:
+  case SyncScope::DeviceScope:
     Name = "agent";
     break;
+  case SyncScope::SystemScope:
   case SyncScope::HIPSystem:
   case SyncScope::OpenCLAllSVMDevices:
     Name = "";
@@ -555,7 +626,8 @@ llvm::Value *AMDGPUTargetCodeGenInfo::createEnqueuedBlockKernel(
 
 void CodeGenModule::handleAMDGPUFlatWorkGroupSizeAttr(
     llvm::Function *F, const AMDGPUFlatWorkGroupSizeAttr *FlatWGS,
-    const ReqdWorkGroupSizeAttr *ReqdWGS) {
+    const ReqdWorkGroupSizeAttr *ReqdWGS, int32_t *MinThreadsVal,
+    int32_t *MaxThreadsVal) {
   unsigned Min = 0;
   unsigned Max = 0;
   if (FlatWGS) {
@@ -568,8 +640,13 @@ void CodeGenModule::handleAMDGPUFlatWorkGroupSizeAttr(
   if (Min != 0) {
     assert(Min <= Max && "Min must be less than or equal Max");
 
+    if (MinThreadsVal)
+      *MinThreadsVal = Min;
+    if (MaxThreadsVal)
+      *MaxThreadsVal = Max;
     std::string AttrVal = llvm::utostr(Min) + "," + llvm::utostr(Max);
-    F->addFnAttr("amdgpu-flat-work-group-size", AttrVal);
+    if (F)
+      F->addFnAttr("amdgpu-flat-work-group-size", AttrVal);
   } else
     assert(Max == 0 && "Max must be zero");
 }

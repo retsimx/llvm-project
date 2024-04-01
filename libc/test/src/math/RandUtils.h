@@ -6,11 +6,16 @@
 //
 //===----------------------------------------------------------------------===//
 
-namespace __llvm_libc {
+#ifndef LLVM_LIBC_TEST_SRC_MATH_RANDUTILS_H
+#define LLVM_LIBC_TEST_SRC_MATH_RANDUTILS_H
+
+namespace LIBC_NAMESPACE {
 namespace testutils {
 
 // Wrapper for std::rand.
 int rand();
 
 } // namespace testutils
-} // namespace __llvm_libc
+} // namespace LIBC_NAMESPACE
+
+#endif // LLVM_LIBC_TEST_SRC_MATH_RANDUTILS_H

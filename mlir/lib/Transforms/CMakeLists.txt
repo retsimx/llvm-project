@@ -5,12 +5,13 @@ add_mlir_library(MLIRTransforms
   ControlFlowSink.cpp
   CSE.cpp
   GenerateRuntimeVerification.cpp
-  Inliner.cpp
+  InlinerPass.cpp
   LocationSnapshot.cpp
   LoopInvariantCodeMotion.cpp
   Mem2Reg.cpp
   OpStats.cpp
   PrintIR.cpp
+  RemoveDeadValues.cpp
   SCCP.cpp
   SROA.cpp
   StripDebugInfo.cpp
@@ -28,6 +29,7 @@ add_mlir_library(MLIRTransforms
   LINK_LIBS PUBLIC
   MLIRAnalysis
   MLIRCopyOpInterface
+  MLIRFunctionInterfaces
   MLIRLoopLikeInterface
   MLIRMemorySlotInterfaces
   MLIRPass

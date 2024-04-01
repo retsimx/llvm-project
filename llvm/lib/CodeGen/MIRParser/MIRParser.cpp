@@ -13,7 +13,6 @@
 
 #include "llvm/CodeGen/MIRParser/MIRParser.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/AsmParser/Parser.h"
 #include "llvm/AsmParser/SlotMapping.h"
@@ -575,7 +574,7 @@ MIRParserImpl::initializeMachineFunction(const yaml::MachineFunction &YamlMF,
   // FIXME: This is a temporary workaround until the reserved registers can be
   // serialized.
   MachineRegisterInfo &MRI = MF.getRegInfo();
-  MRI.freezeReservedRegs(MF);
+  MRI.freezeReservedRegs();
 
   computeFunctionProperties(MF);
 
@@ -608,7 +607,7 @@ bool MIRParserImpl::parseRegisterInfo(PerFunctionMIParsingState &PFS,
                        Twine(VReg.ID.Value) + "'");
     Info.Explicit = true;
 
-    if (StringRef(VReg.Class.Value).equals("_")) {
+    if (VReg.Class.Value == "_") {
       Info.Kind = VRegInfo::GENERIC;
       Info.D.RegBank = nullptr;
     } else {

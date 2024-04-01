@@ -112,7 +112,7 @@ void release_return(int *lock) {
 }
 
 
-// rdar://8461279 - Atomics with address spaces.
+// Atomics with address spaces.
 // CHECK: @addrspace
 void addrspace(int  __attribute__((address_space(256))) * P) {
   __sync_bool_compare_and_swap(P, 0, 1);
@@ -145,6 +145,5 @@ void force_global_uses(void) {
   (void)glob_int;
   // CHECK: load atomic i32, ptr @[[GLOB_INT]] seq_cst
   (void)glob_flt;
-  // CHECK: %[[LOCAL_FLT:.+]] = load atomic i32, ptr @[[GLOB_FLT]] seq_cst
-  // CHECK-NEXT: bitcast i32 %[[LOCAL_FLT]] to float
+  // CHECK: load atomic float, ptr @[[GLOB_FLT]] seq_cst
 }

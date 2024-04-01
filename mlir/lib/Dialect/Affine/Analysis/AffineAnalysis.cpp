@@ -17,7 +17,6 @@
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/AffineExprVisitor.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IntegerSet.h"
@@ -60,8 +59,10 @@ static Value getSupportedReduction(AffineForOp forOp, unsigned pos,
           .Case([](arith::AndIOp) { return arith::AtomicRMWKind::andi; })
           .Case([](arith::OrIOp) { return arith::AtomicRMWKind::ori; })
           .Case([](arith::MulIOp) { return arith::AtomicRMWKind::muli; })
-          .Case([](arith::MinFOp) { return arith::AtomicRMWKind::minf; })
-          .Case([](arith::MaxFOp) { return arith::AtomicRMWKind::maxf; })
+          .Case(
+              [](arith::MinimumFOp) { return arith::AtomicRMWKind::minimumf; })
+          .Case(
+              [](arith::MaximumFOp) { return arith::AtomicRMWKind::maximumf; })
           .Case([](arith::MinSIOp) { return arith::AtomicRMWKind::mins; })
           .Case([](arith::MaxSIOp) { return arith::AtomicRMWKind::maxs; })
           .Case([](arith::MinUIOp) { return arith::AtomicRMWKind::minu; })
@@ -634,8 +635,8 @@ DependenceResult mlir::affine::checkMemrefAccessDependence(
   // Return 'NoDependence' if loopDepth > numCommonLoops and if the ancestor
   // operation of 'srcAccess' does not properly dominate the ancestor
   // operation of 'dstAccess' in the same common operation block.
-  // Note: this check is skipped if 'allowRAR' is true, because because RAR
-  // deps can exist irrespective of lexicographic ordering b/w src and dst.
+  // Note: this check is skipped if 'allowRAR' is true, because RAR deps
+  // can exist irrespective of lexicographic ordering b/w src and dst.
   unsigned numCommonLoops = getNumCommonLoops(srcDomain, dstDomain);
   assert(loopDepth <= numCommonLoops + 1);
   if (!allowRAR && loopDepth > numCommonLoops &&

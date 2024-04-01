@@ -5,14 +5,10 @@
 set(LLVM_DIR_SAVE ${LLVM_DIR})
 set(Clang_DIR_SAVE ${Clang_DIR})
 
-# TODO LLVM 17 prefer to use teh stable release again instead of ToT.
-# libc++ normally prefers the use the last stable release instead of the ToT.
-# For modules we need ToT since they are still under heavy development. So
-# temporary the ToT version is preferred.
-find_package(Clang 17)
-if (NOT Clang_FOUND)
-  find_package(Clang 16)
-endif()
+# Since the Clang C++ ABI is not stable the Clang libraries and clang-tidy
+# versions must match. Otherwise there likely will be ODR-violations. This had
+# led to crashes and incorrect output of the clang-tidy based checks.
+find_package(Clang ${CMAKE_CXX_COMPILER_VERSION})
 
 set(SOURCES
     abi_tag_on_virtual.cpp

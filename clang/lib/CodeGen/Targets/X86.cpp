@@ -40,6 +40,11 @@ static llvm::Type* X86AdjustInlineAsmType(CodeGen::CodeGenFunction &CGF,
     return llvm::Type::getX86_MMXTy(CGF.getLLVMContext());
   }
 
+  if (Constraint == "k") {
+    llvm::Type *Int1Ty = llvm::Type::getInt1Ty(CGF.getLLVMContext());
+    return llvm::FixedVectorType::get(Int1Ty, Ty->getScalarSizeInBits());
+  }
+
   // No operation needed
   return Ty;
 }
@@ -87,12 +92,15 @@ static ABIArgInfo getDirectX86Hva(llvm::Type* T = nullptr) {
 /// Similar to llvm::CCState, but for Clang.
 struct CCState {
   CCState(CGFunctionInfo &FI)
-      : IsPreassigned(FI.arg_size()), CC(FI.getCallingConvention()) {}
+      : IsPreassigned(FI.arg_size()), CC(FI.getCallingConvention()),
+	Required(FI.getRequiredArgs()), IsDelegateCall(FI.isDelegateCall()) {}
 
   llvm::SmallBitVector IsPreassigned;
   unsigned CC = CallingConv::CC_C;
   unsigned FreeRegs = 0;
   unsigned FreeSSERegs = 0;
+  RequiredArgs Required;
+  bool IsDelegateCall = false;
 };
 
 /// X86_32ABIInfo - The X86-32 ABI information.
@@ -141,7 +149,7 @@ class X86_32ABIInfo : public ABIInfo {
   Class classify(QualType Ty) const;
   ABIArgInfo classifyReturnType(QualType RetTy, CCState &State) const;
   ABIArgInfo classifyArgumentType(QualType RetTy, CCState &State,
-                                  bool isDelegateCall) const;
+                                  unsigned ArgIndex) const;
 
   /// Updates the number of available free registers, returns
   /// true if any registers were allocated.
@@ -739,7 +747,7 @@ void X86_32ABIInfo::runVectorCallFirstPass(CGFunctionInfo &FI, CCState &State) c
 }
 
 ABIArgInfo X86_32ABIInfo::classifyArgumentType(QualType Ty, CCState &State,
-                                               bool isDelegateCall) const {
+                                               unsigned ArgIndex) const {
   // FIXME: Set alignment on indirect arguments.
   bool IsFastCall = State.CC == llvm::CallingConv::X86_FastCall;
   bool IsRegCall = State.CC == llvm::CallingConv::X86_RegCall;
@@ -754,7 +762,7 @@ ABIArgInfo X86_32ABIInfo::classifyArgumentType(QualType Ty, CCState &State,
     CGCXXABI::RecordArgABI RAA = getRecordArgABI(RT, getCXXABI());
     if (RAA == CGCXXABI::RAA_Indirect) {
       return getIndirectResult(Ty, false, State);
-    } else if (isDelegateCall) {
+    } else if (State.IsDelegateCall) {
       // Avoid having different alignments on delegate call args by always
       // setting the alignment to 4, which is what we do for inallocas.
       ABIArgInfo Res = getIndirectResult(Ty, false, State);
@@ -812,11 +820,12 @@ ABIArgInfo X86_32ABIInfo::classifyArgumentType(QualType Ty, CCState &State,
     }
     llvm::IntegerType *PaddingType = NeedsPadding ? Int32 : nullptr;
 
-    // Pass over-aligned aggregates on Windows indirectly. This behavior was
-    // added in MSVC 2015. Use the required alignment from the record layout,
-    // since that may be less than the regular type alignment, and types with
-    // required alignment of less than 4 bytes are not passed indirectly.
-    if (IsWin32StructABI) {
+    // Pass over-aligned aggregates to non-variadic functions on Windows
+    // indirectly. This behavior was added in MSVC 2015. Use the required
+    // alignment from the record layout, since that may be less than the
+    // regular type alignment, and types with required alignment of less than 4
+    // bytes are not passed indirectly.
+    if (IsWin32StructABI && State.Required.isRequiredArg(ArgIndex)) {
       unsigned AlignInBits = 0;
       if (RT) {
         const ASTRecordLayout &Layout =
@@ -942,13 +951,13 @@ void X86_32ABIInfo::computeInfo(CGFunctionInfo &FI) const {
 
   bool UsedInAlloca = false;
   MutableArrayRef<CGFunctionInfoArgInfo> Args = FI.arguments();
-  for (int I = 0, E = Args.size(); I < E; ++I) {
+  for (unsigned I = 0, E = Args.size(); I < E; ++I) {
     // Skip arguments that have already been assigned.
     if (State.IsPreassigned.test(I))
       continue;
 
     Args[I].info =
-        classifyArgumentType(Args[I].type, State, FI.isDelegateCall());
+        classifyArgumentType(Args[I].type, State, I);
     UsedInAlloca |= (Args[I].info.getKind() == ABIArgInfo::InAlloca);
   }
 
@@ -1508,6 +1517,24 @@ static bool checkAVXParamFeature(DiagnosticsEngine &Diag,
   return false;
 }
 
+static bool checkAVX512ParamFeature(DiagnosticsEngine &Diag,
+                                    SourceLocation CallLoc,
+                                    const llvm::StringMap<bool> &CallerMap,
+                                    const llvm::StringMap<bool> &CalleeMap,
+                                    QualType Ty, bool IsArgument) {
+  bool Caller256 = CallerMap.lookup("avx512f") && !CallerMap.lookup("evex512");
+  bool Callee256 = CalleeMap.lookup("avx512f") && !CalleeMap.lookup("evex512");
+
+  // Forbid 512-bit or larger vector pass or return when we disabled ZMM
+  // instructions.
+  if (Caller256 || Callee256)
+    return Diag.Report(CallLoc, diag::err_avx_calling_convention)
+           << IsArgument << Ty << "evex512";
+
+  return checkAVXParamFeature(Diag, CallLoc, CallerMap, CalleeMap, Ty,
+                              "avx512f", IsArgument);
+}
+
 static bool checkAVXParam(DiagnosticsEngine &Diag, ASTContext &Ctx,
                           SourceLocation CallLoc,
                           const llvm::StringMap<bool> &CallerMap,
@@ -1515,8 +1542,8 @@ static bool checkAVXParam(DiagnosticsEngine &Diag, ASTContext &Ctx,
                           bool IsArgument) {
   uint64_t Size = Ctx.getTypeSize(Ty);
   if (Size > 256)
-    return checkAVXParamFeature(Diag, CallLoc, CallerMap, CalleeMap, Ty,
-                                "avx512f", IsArgument);
+    return checkAVX512ParamFeature(Diag, CallLoc, CallerMap, CalleeMap, Ty,
+                                   IsArgument);
 
   if (Size > 128)
     return checkAVXParamFeature(Diag, CallLoc, CallerMap, CalleeMap, Ty, "avx",
@@ -1775,6 +1802,9 @@ void X86_64ABIInfo::classify(QualType Ty, uint64_t OffsetBase, Class &Lo,
     } else if (k == BuiltinType::Float || k == BuiltinType::Double ||
                k == BuiltinType::Float16 || k == BuiltinType::BFloat16) {
       Current = SSE;
+    } else if (k == BuiltinType::Float128) {
+      Lo = SSE;
+      Hi = SSEUp;
     } else if (k == BuiltinType::LongDouble) {
       const llvm::fltSemantics *LDF = &getTarget().getLongDoubleFormat();
       if (LDF == &llvm::APFloat::IEEEquad()) {
@@ -1963,7 +1993,7 @@ void X86_64ABIInfo::classify(QualType Ty, uint64_t OffsetBase, Class &Lo,
     // this, but it isn't worth it and would be harder to verify.
     Current = NoClass;
     uint64_t EltSize = getContext().getTypeSize(AT->getElementType());
-    uint64_t ArraySize = AT->getSize().getZExtValue();
+    uint64_t ArraySize = AT->getZExtSize();
 
     // The only case a 256-bit wide vector could be used is when the array
     // contains a single 256-bit element. Since Lo and Hi logic isn't extended
@@ -2265,7 +2295,7 @@ static bool BitsContainNoUserData(QualType Ty, unsigned StartBit,
 
   if (const ConstantArrayType *AT = Context.getAsConstantArrayType(Ty)) {
     unsigned EltSize = (unsigned)Context.getTypeSize(AT->getElementType());
-    unsigned NumElts = (unsigned)AT->getSize().getZExtValue();
+    unsigned NumElts = (unsigned)AT->getZExtSize();
 
     // Check each element to see if the element overlaps with the queried range.
     for (unsigned i = 0; i != NumElts; ++i) {
@@ -2758,12 +2788,11 @@ X86_64ABIInfo::classifyArgumentType(QualType Ty, unsigned freeIntRegs,
     // memory), except in situations involving unions.
   case X87Up:
   case SSE:
+    ++neededSSE;
     HighPart = GetSSETypeAtOffset(CGT.ConvertType(Ty), 8, Ty, 8);
 
     if (Lo == NoClass)  // Pass HighPart at offset 8 in memory.
       return ABIArgInfo::getDirect(HighPart, 8);
-
-    ++neededSSE;
     break;
 
     // AMD64-ABI 3.2.3p3: Rule 4. If the class is SSEUP, the
@@ -2956,9 +2985,7 @@ static Address EmitX86_64VAArgFromMemory(CodeGenFunction &CGF,
 
   // AMD64-ABI 3.5.7p5: Step 8. Fetch type from l->overflow_arg_area.
   llvm::Type *LTy = CGF.ConvertTypeForMem(Ty);
-  llvm::Value *Res =
-    CGF.Builder.CreateBitCast(overflow_arg_area,
-                              llvm::PointerType::getUnqual(LTy));
+  llvm::Value *Res = overflow_arg_area;
 
   // AMD64-ABI 3.5.7p5: Step 9. Set l->overflow_arg_area to:
   // l->overflow_arg_area + sizeof(type).
@@ -2990,6 +3017,10 @@ Address X86_64ABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
   Ty = getContext().getCanonicalType(Ty);
   ABIArgInfo AI = classifyArgumentType(Ty, 0, neededInt, neededSSE,
                                        /*isNamedArg*/false);
+
+  // Empty records are ignored for parameter passing purposes.
+  if (AI.isIgnore())
+    return CGF.CreateMemTemp(Ty);
 
   // AMD64-ABI 3.5.7p5: Step 1. Determine whether type may be passed
   // in the registers. If not go to step 7.
@@ -3061,8 +3092,6 @@ Address X86_64ABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
     llvm::Type *TyHi = ST->getElementType(1);
     assert((TyLo->isFPOrFPVectorTy() ^ TyHi->isFPOrFPVectorTy()) &&
            "Unexpected ABI info for mixed regs");
-    llvm::Type *PTyLo = llvm::PointerType::getUnqual(TyLo);
-    llvm::Type *PTyHi = llvm::PointerType::getUnqual(TyHi);
     llvm::Value *GPAddr =
         CGF.Builder.CreateGEP(CGF.Int8Ty, RegSaveArea, gp_offset);
     llvm::Value *FPAddr =
@@ -3073,13 +3102,13 @@ Address X86_64ABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
     // Copy the first element.
     // FIXME: Our choice of alignment here and below is probably pessimistic.
     llvm::Value *V = CGF.Builder.CreateAlignedLoad(
-        TyLo, CGF.Builder.CreateBitCast(RegLoAddr, PTyLo),
+        TyLo, RegLoAddr,
         CharUnits::fromQuantity(getDataLayout().getABITypeAlign(TyLo)));
     CGF.Builder.CreateStore(V, CGF.Builder.CreateStructGEP(Tmp, 0));
 
     // Copy the second element.
     V = CGF.Builder.CreateAlignedLoad(
-        TyHi, CGF.Builder.CreateBitCast(RegHiAddr, PTyHi),
+        TyHi, RegHiAddr,
         CharUnits::fromQuantity(getDataLayout().getABITypeAlign(TyHi)));
     CGF.Builder.CreateStore(V, CGF.Builder.CreateStructGEP(Tmp, 1));
 

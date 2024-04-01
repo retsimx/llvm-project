@@ -117,11 +117,6 @@ TEST_F(PPDependencyDirectivesTest, MacroGuard) {
   };
 
   auto PPOpts = std::make_shared<PreprocessorOptions>();
-  PPOpts->DependencyDirectivesForFile = [&](FileEntryRef File)
-      -> std::optional<ArrayRef<dependency_directives_scan::Directive>> {
-    return getDependencyDirectives(File);
-  };
-
   TrivialModuleLoader ModLoader;
   HeaderSearch HeaderInfo(std::make_shared<HeaderSearchOptions>(), SourceMgr,
                           Diags, LangOpts, Target.get());
@@ -130,20 +125,25 @@ TEST_F(PPDependencyDirectivesTest, MacroGuard) {
                   /*OwnsHeaderSearch =*/false);
   PP.Initialize(*Target);
 
+  PP.setDependencyDirectivesFn(
+      [&](FileEntryRef File)
+          -> std::optional<ArrayRef<dependency_directives_scan::Directive>> {
+        return getDependencyDirectives(File);
+      });
+
   SmallVector<StringRef> IncludedFiles;
   PP.addPPCallbacks(std::make_unique<IncludeCollector>(PP, IncludedFiles));
   PP.EnterMainSourceFile();
-  while (true) {
-    Token tok;
-    PP.Lex(tok);
-    if (tok.is(tok::eof))
-      break;
-  }
+  PP.LexTokensUntilEOF();
 
-  SmallVector<StringRef> ExpectedIncludes{
+  SmallVector<std::string> IncludedFilesSlash;
+  for (StringRef IncludedFile : IncludedFiles)
+    IncludedFilesSlash.push_back(
+        llvm::sys::path::convert_to_slash(IncludedFile));
+  SmallVector<std::string> ExpectedIncludes{
       "main.c", "./head1.h", "./head2.h", "./head2.h", "./head3.h", "./head3.h",
   };
-  EXPECT_EQ(IncludedFiles, ExpectedIncludes);
+  EXPECT_EQ(IncludedFilesSlash, ExpectedIncludes);
 }
 
 } // anonymous namespace

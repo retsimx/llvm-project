@@ -7,18 +7,32 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang-include-cleaner/Record.h"
+#include "clang-include-cleaner/Types.h"
+#include "clang/AST/Decl.h"
+#include "clang/Basic/Diagnostic.h"
+#include "clang/Basic/LLVM.h"
 #include "clang/Basic/SourceLocation.h"
+#include "clang/Frontend/CompilerInvocation.h"
 #include "clang/Frontend/FrontendAction.h"
 #include "clang/Frontend/FrontendActions.h"
+#include "clang/Frontend/FrontendOptions.h"
+#include "clang/Serialization/PCHContainerOperations.h"
 #include "clang/Testing/TestAST.h"
 #include "clang/Tooling/Inclusions/StandardLibrary.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/IntrusiveRefCntPtr.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Testing/Annotations/Annotations.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include <cassert>
+#include <memory>
+#include <optional>
+#include <utility>
 
 namespace clang::include_cleaner {
 namespace {
@@ -39,9 +53,9 @@ MATCHER_P(named, N, "") {
 }
 
 MATCHER_P(FileNamed, N, "") {
-  if (arg->tryGetRealPathName() == N)
+  if (arg.getFileEntry().tryGetRealPathName() == N)
     return true;
-  *result_listener << arg->tryGetRealPathName().str();
+  *result_listener << arg.getFileEntry().tryGetRealPathName().str();
   return false;
 }
 
@@ -306,7 +320,7 @@ protected:
 
   void createEmptyFiles(llvm::ArrayRef<StringRef> FileNames) {
     for (llvm::StringRef File : FileNames)
-      Inputs.ExtraFiles[File] = "";
+      Inputs.ExtraFiles[File] = "#pragma once";
   }
 };
 
@@ -438,6 +452,8 @@ TEST_F(PragmaIncludeTest, IWYUExportForStandardHeaders) {
   auto &FM = Processed.fileManager();
   EXPECT_THAT(PI.getExporters(*tooling::stdlib::Header::named("<string>"), FM),
               testing::UnorderedElementsAre(FileNamed("export.h")));
+  EXPECT_THAT(PI.getExporters(llvm::cantFail(FM.getFileRef("string")), FM),
+              testing::UnorderedElementsAre(FileNamed("export.h")));
 }
 
 TEST_F(PragmaIncludeTest, IWYUExportBlock) {
@@ -508,6 +524,94 @@ TEST_F(PragmaIncludeTest, AlwaysKeep) {
   auto &FM = Processed.fileManager();
   EXPECT_TRUE(PI.shouldKeep(FM.getFile("always_keep.h").get()));
   EXPECT_FALSE(PI.shouldKeep(FM.getFile("usual.h").get()));
+}
+
+TEST_F(PragmaIncludeTest, ExportInUnnamedBuffer) {
+  llvm::StringLiteral Filename = "test.cpp";
+  auto Code = R"cpp(#include "exporter.h")cpp";
+  Inputs.ExtraFiles["exporter.h"] = R"cpp(
+  #pragma once
+  #include "foo.h" // IWYU pragma: export
+  )cpp";
+  Inputs.ExtraFiles["foo.h"] = "";
+
+  auto Clang = std::make_unique<CompilerInstance>(
+      std::make_shared<PCHContainerOperations>());
+  Clang->createDiagnostics();
+
+  Clang->setInvocation(std::make_unique<CompilerInvocation>());
+  ASSERT_TRUE(CompilerInvocation::CreateFromArgs(
+      Clang->getInvocation(), {Filename.data()}, Clang->getDiagnostics(),
+      "clang"));
+
+  // Create unnamed memory buffers for all the files.
+  auto VFS = llvm::makeIntrusiveRefCnt<llvm::vfs::InMemoryFileSystem>();
+  VFS->addFile(Filename, /*ModificationTime=*/0,
+               llvm::MemoryBuffer::getMemBufferCopy(Code, /*BufferName=*/""));
+  for (const auto &Extra : Inputs.ExtraFiles)
+    VFS->addFile(Extra.getKey(), /*ModificationTime=*/0,
+                 llvm::MemoryBuffer::getMemBufferCopy(Extra.getValue(),
+                                                      /*BufferName=*/""));
+  auto *FM = Clang->createFileManager(VFS);
+  ASSERT_TRUE(Clang->ExecuteAction(*Inputs.MakeAction()));
+  EXPECT_THAT(
+      PI.getExporters(llvm::cantFail(FM->getFileRef("foo.h")), *FM),
+      testing::ElementsAre(llvm::cantFail(FM->getFileRef("exporter.h"))));
+}
+
+TEST_F(PragmaIncludeTest, OutlivesFMAndSM) {
+  Inputs.Code = R"cpp(
+    #include "public.h"
+  )cpp";
+  Inputs.ExtraFiles["public.h"] = R"cpp(
+    #include "private.h"
+    #include "private2.h" // IWYU pragma: export
+  )cpp";
+  Inputs.ExtraFiles["private.h"] = R"cpp(
+    // IWYU pragma: private, include "public.h"
+  )cpp";
+  Inputs.ExtraFiles["private2.h"] = R"cpp(
+    // IWYU pragma: private
+  )cpp";
+  build(); // Fills up PI, file/source manager used is destroyed afterwards.
+  Inputs.MakeAction = nullptr; // Don't populate PI anymore.
+
+  // Now this build gives us a new File&Source Manager.
+  TestAST Processed = build();
+  auto &FM = Processed.fileManager();
+  auto PrivateFE = FM.getFile("private.h");
+  assert(PrivateFE);
+  EXPECT_EQ(PI.getPublic(PrivateFE.get()), "\"public.h\"");
+
+  auto Private2FE = FM.getFile("private2.h");
+  assert(Private2FE);
+  EXPECT_THAT(PI.getExporters(Private2FE.get(), FM),
+              testing::ElementsAre(llvm::cantFail(FM.getFileRef("public.h"))));
+}
+
+TEST_F(PragmaIncludeTest, CanRecordManyTimes) {
+  Inputs.Code = R"cpp(
+    #include "public.h"
+  )cpp";
+  Inputs.ExtraFiles["public.h"] = R"cpp(
+    #include "private.h"
+  )cpp";
+  Inputs.ExtraFiles["private.h"] = R"cpp(
+    // IWYU pragma: private, include "public.h"
+  )cpp";
+
+  TestAST Processed = build();
+  auto &FM = Processed.fileManager();
+  auto PrivateFE = FM.getFile("private.h");
+  llvm::StringRef Public = PI.getPublic(PrivateFE.get());
+  EXPECT_EQ(Public, "\"public.h\"");
+
+  // This build populates same PI during build, but this time we don't have
+  // any IWYU pragmas. Make sure strings from previous recordings are still
+  // alive.
+  Inputs.Code = "";
+  build();
+  EXPECT_EQ(Public, "\"public.h\"");
 }
 } // namespace
 } // namespace clang::include_cleaner

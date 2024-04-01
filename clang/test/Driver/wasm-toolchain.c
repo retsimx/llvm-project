@@ -33,19 +33,19 @@
 // LINK_KNOWN: "-cc1" {{.*}} "-o" "[[temp:[^"]*]]"
 // LINK_KNOWN: wasm-ld{{.*}}" "-L/foo/lib/wasm32-wasi" "crt1.o" "[[temp]]" "-lc" "{{.*[/\\]}}libclang_rt.builtins-wasm32.a" "-o" "a.out"
 
-// -shared should be passed through to `wasm-ld` and not include crt1.o with a known OS.
+// -shared should be passed through to `wasm-ld` and include crt1-reactor.o with a known OS.
 
-// RUN: %clang -### -shared --target=wasm32-wasi --sysroot=/foo %s 2>&1 \
+// RUN: %clang -### -shared -mexec-model=reactor --target=wasm32-wasi --sysroot=/foo %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=LINK_KNOWN_SHARED %s
 // LINK_KNOWN_SHARED: "-cc1" {{.*}} "-o" "[[temp:[^"]*]]"
-// LINK_KNOWN_SHARED: wasm-ld{{.*}}" "-L/foo/lib/wasm32-wasi" "-shared" "[[temp]]" "-lc" "{{.*[/\\]}}libclang_rt.builtins-wasm32.a" "-o" "a.out"
+// LINK_KNOWN_SHARED: wasm-ld{{.*}}" "-L/foo/lib/wasm32-wasi" "crt1-reactor.o" "--entry" "_initialize" "-shared" "[[temp]]" "-lc" "{{.*[/\\]}}libclang_rt.builtins-wasm32.a" "-o" "a.out"
 
-// -shared should be passed through to `wasm-ld` and not include crt1.o with an unknown OS.
+// -shared should be passed through to `wasm-ld` and include crt1-reactor.o with an unknown OS.
 
-// RUN: %clang -### -shared --target=wasm32-unknown-unknown --sysroot=/foo %s 2>&1 \
+// RUN: %clang -### -shared -mexec-model=reactor --target=wasm32-unknown-unknown --sysroot=/foo %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=LINK_UNKNOWN_SHARED %s
 // LINK_UNKNOWN_SHARED: "-cc1" {{.*}} "-o" "[[temp:[^"]*]]"
-// LINK_UNKNOWN_SHARED: wasm-ld{{.*}}" "-shared" "[[temp]]" "-lc" "{{.*[/\\]}}libclang_rt.builtins-wasm32.a" "-o" "a.out"
+// LINK_UNKNOWN_SHARED: wasm-ld{{.*}}" "crt1-reactor.o" "--entry" "_initialize" "-shared" "[[temp]]" "-lc" "{{.*[/\\]}}libclang_rt.builtins-wasm32.a" "-o" "a.out"
 
 // A basic C link command-line with optimization with known OS.
 
@@ -197,3 +197,27 @@
 // RUN: not %clang -### %s --target=wasm32-unknown-unknown --sysroot=%s/no-sysroot-there -fPIC -mno-mutable-globals %s 2>&1 \
 // RUN:   | FileCheck -check-prefix=PIC_NO_MUTABLE_GLOBALS %s
 // PIC_NO_MUTABLE_GLOBALS: error: invalid argument '-fPIC' not allowed with '-mno-mutable-globals'
+
+// Test that `wasm32-wasip2` invokes the `wasm-component-ld` linker by default
+// instead of `wasm-ld`.
+
+// RUN: %clang -### -O2 --target=wasm32-wasip2 %s --sysroot /foo 2>&1 \
+// RUN:   | FileCheck -check-prefix=LINK_WASIP2 %s
+// LINK_WASIP2: "-cc1" {{.*}} "-o" "[[temp:[^"]*]]"
+// LINK_WASIP2: wasm-component-ld{{.*}}" "-L/foo/lib/wasm32-wasip2" "crt1.o" "[[temp]]" "-lc" "{{.*[/\\]}}libclang_rt.builtins-wasm32.a" "-o" "a.out"
+
+// Test that on `wasm32-wasip2` the `wasm-component-ld` programs is told where
+// to find `wasm-ld` by default.
+
+// RUN: %clang -### -O2 --target=wasm32-wasip2 %s --sysroot /foo 2>&1 \
+// RUN:   | FileCheck -check-prefix=LINK_WASIP2_FIND_WASMLD %s
+// LINK_WASIP2_FIND_WASMLD: "-cc1" {{.*}} "-o" "[[temp:[^"]*]]"
+// LINK_WASIP2_FIND_WASMLD: wasm-component-ld{{.*}}" {{.*}} "--wasm-ld-path" "{{.*}}wasm-ld{{.*}}" {{.*}} "[[temp]]" {{.*}}
+
+// If `wasm32-wasip2` is configured with `wasm-ld` as a linker then don't pass
+// the `--wasm-ld-path` flag.
+
+// RUN: %clang -### -O2 --target=wasm32-wasip2 -fuse-ld=lld %s --sysroot /foo 2>&1 \
+// RUN:   | FileCheck -check-prefix=LINK_WASIP2_USE_WASMLD %s
+// LINK_WASIP2_USE_WASMLD: "-cc1" {{.*}} "-o" "[[temp:[^"]*]]"
+// LINK_WASIP2_USE_WASMLD: wasm-ld{{.*}}" "-m" "wasm32" {{.*}} "[[temp]]" {{.*}}
