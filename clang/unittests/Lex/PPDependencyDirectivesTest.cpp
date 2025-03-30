@@ -117,19 +117,18 @@ TEST_F(PPDependencyDirectivesTest, MacroGuard) {
   };
 
   auto PPOpts = std::make_shared<PreprocessorOptions>();
+  PPOpts->DependencyDirectivesForFile = [&](FileEntryRef File)
+      -> std::optional<ArrayRef<dependency_directives_scan::Directive>> {
+    return getDependencyDirectives(File);
+  };
+
+  HeaderSearchOptions HSOpts;
   TrivialModuleLoader ModLoader;
-  HeaderSearch HeaderInfo(std::make_shared<HeaderSearchOptions>(), SourceMgr,
-                          Diags, LangOpts, Target.get());
+  HeaderSearch HeaderInfo(HSOpts, SourceMgr, Diags, LangOpts, Target.get());
   Preprocessor PP(PPOpts, Diags, LangOpts, SourceMgr, HeaderInfo, ModLoader,
                   /*IILookup =*/nullptr,
                   /*OwnsHeaderSearch =*/false);
   PP.Initialize(*Target);
-
-  PP.setDependencyDirectivesFn(
-      [&](FileEntryRef File)
-          -> std::optional<ArrayRef<dependency_directives_scan::Directive>> {
-        return getDependencyDirectives(File);
-      });
 
   SmallVector<StringRef> IncludedFiles;
   PP.addPPCallbacks(std::make_unique<IncludeCollector>(PP, IncludedFiles));

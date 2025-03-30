@@ -6,11 +6,11 @@ namespace std {
   struct type_info;
   using size_t = decltype(sizeof(0)); // expected-warning {{decltype}} expected-warning {{alias}}
   template<typename T> struct initializer_list {
-    initializer_list(T*, size_t);
-    T *p;
+    initializer_list(const T*, size_t);
+    const T *p;
     size_t n;
-    T *begin();
-    T *end();
+    const T *begin();
+    const T *end();
   };
 }
 
@@ -84,7 +84,7 @@ struct DelayedDefaultArgumentParseInitList {
   }
 };
 
-int operator"" _hello(const char *); // expected-warning {{literal operators are incompatible with C++98}}
+int operator""_hello(const char *); // expected-warning {{literal operators are incompatible with C++98}}
 
 enum EnumFixed : int { // expected-warning {{enumeration types with a fixed underlying type are incompatible with C++98}}
 };
@@ -177,9 +177,11 @@ template<typename T> int TemplateFn(T) { return 0; }
 void LocalTemplateArg() {
   struct S {};
   TemplateFn(S()); // expected-warning {{local type 'S' as template argument is incompatible with C++98}}
+                   // expected-note@-1 {{while substituting deduced template arguments}}
 }
 struct {} obj_of_unnamed_type; // expected-note {{here}}
 int UnnamedTemplateArg = TemplateFn(obj_of_unnamed_type); // expected-warning {{unnamed type as template argument is incompatible with C++98}}
+                                                          // expected-note@-1 {{while substituting deduced template arguments}}
 
 // FIXME: We do not implement C++98 compatibility warnings for the C++17
 // template argument evaluation rules.
@@ -187,8 +189,8 @@ int UnnamedTemplateArg = TemplateFn(obj_of_unnamed_type); // expected-warning {{
 namespace RedundantParensInAddressTemplateParam {
   int n;
   template<int*p> struct S {};
-  S<(&n)> s; // expected-warning {{redundant parentheses surrounding address non-type template argument are incompatible with C++98}}
-  S<(((&n)))> t; // expected-warning {{redundant parentheses surrounding address non-type template argument are incompatible with C++98}}
+  S<(&n)> s; // expected-warning {{parentheses around address non-type template argument are incompatible with C++98}}
+  S<(((&n)))> t; // expected-warning {{parentheses around address non-type template argument are incompatible with C++98}}
 }
 #endif
 
@@ -200,7 +202,7 @@ template<> struct TemplateSpecOutOfScopeNs::S<char> {};
 struct Typename {
   template<typename T> struct Inner {};
 };
-typename ::Typename TypenameOutsideTemplate(); // expected-warning {{use of 'typename' outside of a template is incompatible with C++98}}
+typename ::Typename TypenameOutsideTemplate(); // expected-warning {{'typename' outside of a template is incompatible with C++98}}
 Typename::template Inner<int> TemplateOutsideTemplate(); // expected-warning {{use of 'template' keyword outside of a template is incompatible with C++98}}
 
 struct TrivialButNonPOD {

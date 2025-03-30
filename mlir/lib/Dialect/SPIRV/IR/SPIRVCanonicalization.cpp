@@ -250,14 +250,11 @@ struct MulExtendedFold final : OpRewritePattern<MulOp> {
 
     auto highBits = constFoldBinaryOp<IntegerAttr>(
         {lhsAttr, rhsAttr}, [](const APInt &a, const APInt &b) {
-          unsigned bitWidth = a.getBitWidth();
-          APInt c;
           if (IsSigned) {
-            c = a.sext(bitWidth * 2) * b.sext(bitWidth * 2);
+            return llvm::APIntOps::mulhs(a, b);
           } else {
-            c = a.zext(bitWidth * 2) * b.zext(bitWidth * 2);
+            return llvm::APIntOps::mulhu(a, b);
           }
-          return c.extractBits(bitWidth, bitWidth); // Extract high result
         });
 
     if (!highBits)
@@ -479,7 +476,7 @@ OpFoldResult spirv::IMulOp::fold(FoldAdaptor adaptor) {
 OpFoldResult spirv::ISubOp::fold(FoldAdaptor adaptor) {
   // x - x = 0
   if (getOperand1() == getOperand2())
-    return Builder(getContext()).getIntegerAttr(getType(), 0);
+    return Builder(getContext()).getZeroAttr(getType());
 
   // According to the SPIR-V spec:
   //
