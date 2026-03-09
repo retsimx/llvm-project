@@ -504,6 +504,9 @@ public:
   /// Emit a .subsection_via_symbols directive.
   virtual void emitSubsectionsViaSymbols();
 
+  /// TC32: Reset section tracking state (called at .fnend boundaries)
+  virtual void resetTC32SectionState() {}
+
   /// Emit the given list \p Options of strings as linker
   /// options into the output.
   virtual void emitLinkerOptions(ArrayRef<std::string> Kind) {}

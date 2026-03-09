@@ -55,6 +55,7 @@ add_llvm_target(ARMCodeGen
   ARMSLSHardening.cpp
   ARMSubtarget.cpp
   ARMTargetMachine.cpp
+  TC32IRFixupPass.cpp
   ARMTargetObjectFile.cpp
   ARMTargetTransformInfo.cpp
   MLxExpansionPass.cpp

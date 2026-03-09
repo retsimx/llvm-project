@@ -351,6 +351,10 @@ std::unique_ptr<CSEConfigBase> ARMPassConfig::getCSEConfig() const {
 }
 
 void ARMPassConfig::addIRPasses() {
+  // TC32: Fix unsupported intrinsics and inline asm before anything else
+  if (TM->getTargetTriple().isThumb())
+    addPass(createTC32IRFixupPass());
+
   if (TM->Options.ThreadModel == ThreadModel::Single)
     addPass(createLowerAtomicPass());
   else

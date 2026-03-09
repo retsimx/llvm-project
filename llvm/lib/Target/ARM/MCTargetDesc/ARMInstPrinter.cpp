@@ -27,6 +27,8 @@
 #include "llvm/TargetParser/SubtargetFeature.h"
 #include <cassert>
 #include <cstdint>
+#include <cstring>
+#include <string>
 
 using namespace llvm;
 
@@ -84,6 +86,90 @@ void ARMInstPrinter::printRegName(raw_ostream &OS, MCRegister Reg) {
 }
 
 void ARMInstPrinter::printInst(const MCInst *MI, uint64_t Address,
+                               StringRef Annot, const MCSubtargetInfo &STI,
+                               raw_ostream &O) {
+  if (!STI.getTargetTriple().isThumb()) {
+    printInstInner(MI, Address, Annot, STI, O);
+    return;
+  }
+
+  std::string Buffer;
+  raw_string_ostream BufOS(Buffer);
+  printInstInner(MI, Address, Annot, STI, BufOS);
+  BufOS.flush();
+
+  struct RepPair { const char* from; const char* to; };
+  static const RepPair Reps[] = {
+    {"adcs\t", "taddc\t"}, {"adcs ", "taddc "},
+    {"adds\t", "tadd\t"},  {"adds ", "tadd "},
+    {"add\t", "tadd\t"},   {"add ", "tadd "},
+    {"ands\t", "tand\t"},  {"ands ", "tand "},
+    {"asrs\t", "tasr\t"},  {"asrs ", "tasr "},
+    {"bics\t", "tbclr\t"}, {"bics ", "tbclr "},
+    {"blx\t", "tjex\t"},   {"blx ", "tjex "},
+    {"bl\t", "tjl\t"},     {"bl ", "tjl "},
+    {"beq\t", "tjeq\t"},   {"beq ", "tjeq "},
+    {"bge\t", "tjge\t"},   {"bge ", "tjge "},
+    {"bgt\t", "tjgt\t"},   {"bgt ", "tjgt "},
+    {"bhi\t", "tjhi\t"},   {"bhi ", "tjhi "},
+    {"bhs\t", "tjhs\t"},   {"bhs ", "tjhs "},
+    {"ble\t", "tjle\t"},   {"ble ", "tjle "},
+    {"bls\t", "tjls\t"},   {"bls ", "tjls "},
+    {"blt\t", "tjlt\t"},   {"blt ", "tjlt "},
+    {"blo\t", "tjlo\t"},   {"blo ", "tjlo "},
+    {"bmi\t", "tjmi\t"},   {"bmi ", "tjmi "},
+    {"bne\t", "tjne\t"},   {"bne ", "tjne "},
+    {"bpl\t", "tjpl\t"},   {"bpl ", "tjpl "},
+    {"bvc\t", "tjvc\t"},   {"bvc ", "tjvc "},
+    {"bvs\t", "tjvs\t"},   {"bvs ", "tjvs "},
+    {"bx\t", "tjex\t"},    {"bx ", "tjex "},
+    {"b\t", "tj\t"},       {"b ", "tj "},
+    {"cmp\t", "tcmp\t"},   {"cmp ", "tcmp "},
+    {"cmn\t", "tcmpn\t"},  {"cmn ", "tcmpn "},
+    {"eors\t", "txor\t"},  {"eors ", "txor "},
+    {"ldm\t", "tloadm\t"}, {"ldm ", "tloadm "},
+    {"ldrsb\t", "tloadrsb\t"},{"ldrsb ", "tloadrsb "},
+    {"ldrsh\t", "tloadrsh\t"},{"ldrsh ", "tloadrsh "},
+    {"ldrb\t", "tloadrb\t"},{"ldrb ", "tloadrb "},
+    {"ldrh\t", "tloadrh\t"},{"ldrh ", "tloadrh "},
+    {"ldr\t", "tloadr\t"}, {"ldr ", "tloadr "},
+    {"lsls\t", "tshftl\t"},{"lsls ", "tshftl "},
+    {"lsrs\t", "tshftr\t"},{"lsrs ", "tshftr "},
+    {"movs\t", "tmov\t"},  {"movs ", "tmov "},
+    {"mov\t", "tmov\t"},   {"mov ", "tmov "},
+    {"muls\t", "tmul\t"},  {"muls ", "tmul "},
+    {"mvns\t", "tmovn\t"}, {"mvns ", "tmovn "},
+    {"orrs\t", "tor\t"},   {"orrs ", "tor "},
+    {"pop\t", "tpop\t"},   {"pop ", "tpop "},
+    {"push\t", "tpush\t"}, {"push ", "tpush "},
+    {"rors\t", "trotr\t"}, {"rors ", "trotr "},
+    {"sbcs\t", "tsubc\t"}, {"sbcs ", "tsubc "},
+    {"stm\t", "tstorem\t"},{"stm ", "tstorem "},
+    {"strb\t", "tstorerb\t"},{"strb ", "tstorerb "},
+    {"strh\t", "tstorerh\t"},{"strh ", "tstorerh "},
+    {"str\t", "tstorer\t"},{"str ", "tstorer "},
+    {"subs\t", "tsub\t"},  {"subs ", "tsub "},
+    {"sub\t", "tsub\t"},   {"sub ", "tsub "},
+    {"adr\t", "tj .\t@"},
+    {"mrs\t", "tmrs\t"},   {"mrs ", "tmrs "},
+    {"sev\t", "; sev\t"},  {"sev ", "; sev "},
+  };
+
+  size_t start = Buffer.find_first_not_of(" \t");
+  if (start != std::string::npos) {
+    for (const auto& rep : Reps) {
+      size_t flen = strlen(rep.from);
+      if (Buffer.compare(start, flen, rep.from) == 0) {
+        Buffer.replace(start, flen, rep.to);
+        break;
+      }
+    }
+  }
+
+  O << Buffer;
+}
+
+void ARMInstPrinter::printInstInner(const MCInst *MI, uint64_t Address,
                                StringRef Annot, const MCSubtargetInfo &STI,
                                raw_ostream &O) {
   unsigned Opcode = MI->getOpcode();

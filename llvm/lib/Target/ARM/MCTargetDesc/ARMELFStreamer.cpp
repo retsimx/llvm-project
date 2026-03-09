@@ -129,7 +129,10 @@ ARMTargetAsmStreamer::ARMTargetAsmStreamer(MCStreamer &S,
       IsVerboseAsm(S.isVerboseAsm()) {}
 
 void ARMTargetAsmStreamer::emitFnStart() { OS << "\t.fnstart\n"; }
-void ARMTargetAsmStreamer::emitFnEnd() { OS << "\t.fnend\n"; }
+void ARMTargetAsmStreamer::emitFnEnd() {
+  OS << "\t.fnend\n";
+  getStreamer().resetTC32SectionState();
+}
 void ARMTargetAsmStreamer::emitCantUnwind() { OS << "\t.cantunwind\n"; }
 
 void ARMTargetAsmStreamer::emitPersonality(const MCSymbol *Personality) {
@@ -203,7 +206,10 @@ void ARMTargetAsmStreamer::emitTextAttribute(unsigned Attribute,
                                              StringRef String) {
   switch (Attribute) {
   case ARMBuildAttrs::CPU_name:
-    OS << "\t.cpu\t" << String.lower();
+    if (getStreamer().getContext().getTargetTriple().isThumb())
+      OS << "@ \t.cpu\t" << String.lower();
+    else
+      OS << "\t.cpu\t" << String.lower();
     break;
   default:
     OS << "\t.eabi_attribute\t" << Attribute << ", \"";
@@ -264,7 +270,13 @@ void ARMTargetAsmStreamer::annotateTLSDescriptorSequence(
   OS << "\t.tlsdescseq\t" << S->getSymbol().getName() << "\n";
 }
 
-void ARMTargetAsmStreamer::emitSyntaxUnified() { OS << "\t.syntax\tunified\n"; }
+void ARMTargetAsmStreamer::emitSyntaxUnified() {
+  // TC32: Comment out .syntax unified — the TC32 assembler doesn't support it
+  if (Streamer.getContext().getTargetTriple().isThumb())
+    OS << "@ \t.syntax\tunified\n";
+  else
+    OS << "\t.syntax\tunified\n";
+}
 
 void ARMTargetAsmStreamer::emitCode16() { OS << "\t.code\t16\n"; }
 
@@ -272,7 +284,10 @@ void ARMTargetAsmStreamer::emitCode32() { OS << "\t.code\t32\n"; }
 
 void ARMTargetAsmStreamer::emitThumbFunc(MCSymbol *Symbol) {
   const MCAsmInfo &MAI = Streamer.getContext().getAsmInfo();
-  OS << "\t.thumb_func";
+  if (getStreamer().getContext().getTargetTriple().isThumb())
+    OS << "\t.tc32_func";
+  else
+    OS << "\t.thumb_func";
   // Only Mach-O hasSubsectionsViaSymbols()
   if (MAI.hasSubsectionsViaSymbols()) {
     OS << '\t';

@@ -27,10 +27,12 @@
 #include "llvm/MC/MCPseudoProbe.h"
 #include "llvm/MC/MCRegister.h"
 #include "llvm/MC/MCRegisterInfo.h"
+#include "llvm/MC/MCSectionELF.h"
 #include "llvm/MC/MCSectionMachO.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbolXCOFF.h"
 #include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/FormattedStream.h"
@@ -176,6 +178,12 @@ class MCAsmStreamer final : public MCAsmBaseStreamer {
   bool ShowInst = false;
   bool UseDwarfDirectory = false;
 
+  // TC32 section injection state
+  bool TC32SectionSeen = false;
+  std::string TC32LastSectionName = ".text";
+  std::string TC32LastSectionExtra;
+  std::string TC32PendingObjectSymbol;
+
   void EmitRegisterName(int64_t Register);
   void PrintQuotedString(StringRef Data, raw_ostream &OS) const;
   void printDwarfFileDirective(unsigned FileNo, StringRef Directory,
@@ -272,6 +280,7 @@ public:
 
   void switchSection(MCSection *Section, uint32_t Subsection) override;
   bool popSection() override;
+  void resetTC32SectionState() override { TC32SectionSeen = false; }
 
   void emitELFSymverDirective(const MCSymbol *OriginalSym, StringRef Name,
                               bool KeepOriginalSym) override;
@@ -668,6 +677,54 @@ void MCAsmStreamer::switchSection(MCSection *Section, uint32_t Subsection) {
   if (!EmittedSectionDirective ||
       MCSectionSubPair(Section, Subsection) != Cur) {
     EmittedSectionDirective = true;
+
+    // TC32: Track the current section and handle pending object injection
+    if (getContext().getTargetTriple().isThumb() && getContext().isELF()) {
+      auto *ElfSec = static_cast<MCSectionELF *>(Section);
+      {
+        StringRef SecName = ElfSec->getName();
+        bool IsShorthand = MAI->shouldOmitSectionDirective(SecName);
+
+        // Build section extra attributes (only for non-shorthand sections)
+        std::string Extra;
+        if (!IsShorthand) {
+          unsigned Flags = ElfSec->getFlags();
+          unsigned Type = ElfSec->getType();
+          if (Flags || Type) {
+            Extra = ",\"";
+            if (Flags & ELF::SHF_ALLOC) Extra += 'a';
+            if (Flags & ELF::SHF_EXECINSTR) Extra += 'x';
+            if (Flags & ELF::SHF_WRITE) Extra += 'w';
+            if (Flags & ELF::SHF_MERGE) Extra += 'M';
+            if (Flags & ELF::SHF_STRINGS) Extra += 'S';
+            Extra += "\",%";
+            if (Type == ELF::SHT_PROGBITS) Extra += "progbits";
+            else if (Type == ELF::SHT_NOBITS) Extra += "nobits";
+            else if (Type == ELF::SHT_NOTE) Extra += "note";
+            if (ElfSec->getEntrySize())
+              Extra += "," + std::to_string(ElfSec->getEntrySize());
+          }
+        }
+
+        // Flush pending object: inject its section before the new section switch
+        if (!TC32PendingObjectSymbol.empty()) {
+          if (SecName != ".ram_code") {
+            OS << "\t.section " << SecName << "." << TC32PendingObjectSymbol
+               << Extra << "\n";
+          }
+          TC32PendingObjectSymbol.clear();
+        }
+
+        TC32LastSectionName = SecName.str();
+        TC32LastSectionExtra = Extra;
+        if (IsShorthand) {
+          TC32SectionSeen = false;
+        } else {
+          TC32SectionSeen = true;
+        }
+      }
+    }
+
     if (MCTargetStreamer *TS = getTargetStreamer()) {
       TS->changeSection(Cur.first, Section, Subsection, OS);
     } else {
@@ -683,6 +740,40 @@ bool MCAsmStreamer::popSection() {
     return false;
   auto [Sec, Subsec] = getCurrentSection();
   MAI->printSwitchToSection(*Sec, Subsec, getContext().getTargetTriple(), OS);
+
+  // TC32: Update section tracking state to match the restored section
+  if (getContext().getTargetTriple().isThumb() && getContext().isELF()) {
+    auto *ElfSec = static_cast<MCSectionELF *>(Sec);
+    {
+      StringRef SecName = ElfSec->getName();
+      TC32LastSectionName = SecName.str();
+      TC32SectionSeen = true;
+      if (SecName == ".text" || SecName == ".data" || SecName == ".bss") {
+        TC32SectionSeen = false;
+        TC32LastSectionExtra = "";
+      } else {
+        unsigned Flags = ElfSec->getFlags();
+        unsigned Type = ElfSec->getType();
+        std::string Extra;
+        if (Flags || Type) {
+          Extra = ",\"";
+          if (Flags & ELF::SHF_ALLOC) Extra += 'a';
+          if (Flags & ELF::SHF_EXECINSTR) Extra += 'x';
+          if (Flags & ELF::SHF_WRITE) Extra += 'w';
+          if (Flags & ELF::SHF_MERGE) Extra += 'M';
+          if (Flags & ELF::SHF_STRINGS) Extra += 'S';
+          Extra += "\",%";
+          if (Type == ELF::SHT_PROGBITS) Extra += "progbits";
+          else if (Type == ELF::SHT_NOBITS) Extra += "nobits";
+          else if (Type == ELF::SHT_NOTE) Extra += "note";
+          if (ElfSec->getEntrySize())
+            Extra += "," + std::to_string(ElfSec->getEntrySize());
+        }
+        TC32LastSectionExtra = Extra;
+      }
+    }
+  }
+
   return true;
 }
 
@@ -705,6 +796,14 @@ void MCAsmStreamer::emitLabel(MCSymbol *Symbol, SMLoc Loc) {
   if (!Symbol->isVariable() &&
       getContext().getObjectFileType() != MCContext::IsCOFF)
     Symbol->setOffset(0);
+
+  // TC32: Flush pending object section injection before the label
+  if (getContext().getTargetTriple().isThumb() &&
+      !TC32PendingObjectSymbol.empty()) {
+    OS << "\t.section " << TC32LastSectionName << "."
+       << TC32PendingObjectSymbol << TC32LastSectionExtra << "\n";
+    TC32PendingObjectSymbol.clear();
+  }
 
   Symbol->print(OS, MAI);
   OS << MAI->getLabelSuffix();
@@ -878,8 +977,29 @@ bool MCAsmStreamer::emitSymbolAttribute(MCSymbol *Symbol,
     case MCSA_ELF_TypeGnuUniqueObject: OS << "gnu_unique_object"; break;
     }
     EmitEOL();
+
+    // TC32: Inject .section directive after .type for functions and objects
+    if (getContext().getTargetTriple().isThumb()) {
+      std::string SymName = Symbol->getName().str();
+      if (Attribute == MCSA_ELF_TypeFunction && !TC32SectionSeen) {
+        if (TC32LastSectionName != ".ram_code") {
+          OS << "\t.section " << TC32LastSectionName << "." << SymName
+             << TC32LastSectionExtra << "\n";
+        }
+      } else if (Attribute == MCSA_ELF_TypeObject) {
+        TC32PendingObjectSymbol = SymName;
+      }
+    }
     return true;
   case MCSA_Global: // .globl/.global
+    // TC32: Flush pending object section injection before .global
+    if (getContext().getTargetTriple().isThumb() &&
+        !TC32PendingObjectSymbol.empty()) {
+      std::string SecName = TC32LastSectionName;
+      OS << "\t.section " << SecName << "." << TC32PendingObjectSymbol
+         << TC32LastSectionExtra << "\n";
+      TC32PendingObjectSymbol.clear();
+    }
     OS << MAI->getGlobalDirective();
     break;
   case MCSA_LGlobal:        OS << "\t.lglobl\t";          break;
@@ -1196,6 +1316,18 @@ void MCAsmStreamer::emitELFSize(MCSymbol *Symbol, const MCExpr *Value) {
 
 void MCAsmStreamer::emitCommonSymbol(MCSymbol *Symbol, uint64_t Size,
                                      Align ByteAlignment) {
+  // TC32: .comm objects belong to .data — flush pending object with .data parent
+  if (getContext().getTargetTriple().isThumb() &&
+      !TC32PendingObjectSymbol.empty()) {
+    if (TC32LastSectionName != ".ram_code") {
+      OS << "\t.section .data." << TC32PendingObjectSymbol << "\n";
+    }
+    TC32PendingObjectSymbol.clear();
+    TC32LastSectionName = ".data";
+    TC32LastSectionExtra = "";
+    TC32SectionSeen = false;
+  }
+
   OS << "\t.comm\t";
   Symbol->print(OS, MAI);
   OS << ',' << Size;
@@ -1597,6 +1729,16 @@ void MCAsmStreamer::emitAlignmentDirective(uint64_t ByteAlignment,
                                            std::optional<int64_t> Value,
                                            unsigned ValueSize,
                                            unsigned MaxBytesToEmit) {
+  // TC32: Flush pending object section injection before .align
+  if (getContext().getTargetTriple().isThumb() &&
+      !TC32PendingObjectSymbol.empty()) {
+    if (TC32LastSectionName != ".ram_code") {
+      OS << "\t.section " << TC32LastSectionName << "."
+         << TC32PendingObjectSymbol << TC32LastSectionExtra << "\n";
+    }
+    TC32PendingObjectSymbol.clear();
+  }
+
   if (MAI->isAIX()) {
     if (!isPowerOf2_64(ByteAlignment))
       report_fatal_error("Only power-of-two alignments are supported "
@@ -1614,7 +1756,11 @@ void MCAsmStreamer::emitAlignmentDirective(uint64_t ByteAlignment,
     default:
       llvm_unreachable("Invalid size for machine code value!");
     case 1:
-      OS << "\t.p2align\t";
+      // TC32: Use .align instead of .p2align
+      if (getContext().getTargetTriple().isThumb())
+        OS << "\t.align\t";
+      else
+        OS << "\t.p2align\t";
       break;
     case 2:
       OS << ".p2alignw ";

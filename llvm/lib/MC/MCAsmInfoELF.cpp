@@ -75,7 +75,16 @@ void MCAsmInfoELF::printSwitchToSection(const MCSection &Section,
                                         uint32_t Subsection, const Triple &T,
                                         raw_ostream &OS) const {
   auto &Sec = static_cast<const MCSectionELF &>(Section);
+  bool IsTC32 = T.isThumb();
+  StringRef SecName = Sec.getName();
+
+  // TC32: Comment out all section directives except .ram_code and .note
+  bool TC32Comment = IsTC32 && !SecName.contains(".ram_code") &&
+                     !SecName.contains(".note");
+
   if (!Sec.isUnique() && shouldOmitSectionDirective(Sec.getName())) {
+    if (TC32Comment)
+      OS << "\t@ ";
     OS << '\t' << Sec.getName();
     if (Subsection)
       OS << '\t' << Subsection;
@@ -83,6 +92,8 @@ void MCAsmInfoELF::printSwitchToSection(const MCSection &Section,
     return;
   }
 
+  if (TC32Comment)
+    OS << "\t@ ";
   OS << "\t.section\t";
   printName(OS, Sec.getName());
 
@@ -224,7 +235,7 @@ void MCAsmInfoELF::printSwitchToSection(const MCSection &Section,
       OS << ",comdat";
   }
 
-  if (Sec.isUnique())
+  if (Sec.isUnique() && !IsTC32)
     OS << ",unique," << Sec.UniqueID;
 
   OS << '\n';

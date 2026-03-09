@@ -1495,12 +1495,12 @@ def tADR : T1I<(outs tGPR:$Rd), (ins t_adrlabel:$addr, pred:$p),
 
 let hasSideEffects = 0, isReMaterializable = 1 in
 def tLEApcrel   : tPseudoInst<(outs tGPR:$Rd), (ins i32imm:$label, pred:$p),
-                              2, IIC_iALUi, []>, Requires<[IsThumb, IsThumb1Only, HasV6]>, Sched<[WriteALU]>;
+                              2, IIC_iALUi, []>, Sched<[WriteALU]>;
 
 let hasSideEffects = 1 in
 def tLEApcrelJT : tPseudoInst<(outs tGPR:$Rd),
                               (ins i32imm:$label, pred:$p),
-                              2, IIC_iALUi, []>, Requires<[IsThumb, IsThumb1Only, HasV6]>, Sched<[WriteALU]>;
+                              2, IIC_iALUi, []>, Sched<[WriteALU]>;
 
 // Thumb-1 doesn't have the TBB or TBH instructions, but we can synthesize them
 // and make use of the same compressed jump table format as Thumb-2.
@@ -1644,7 +1644,7 @@ def : Pat<(ARMWrapper tglobaltlsaddr:$addr),
 
 // JumpTable
 def : T1Pat<(ARMWrapperJT tjumptable:$dst),
-            (tLEApcrelJT tjumptable:$dst)>, Requires<[IsThumb, IsThumb1Only, HasV6]>;
+            (tLEApcrelJT tjumptable:$dst)>;
 
 // Direct calls
 def : T1Pat<(ARMcall texternalsym:$func), (tBL texternalsym:$func)>,
