@@ -719,6 +719,11 @@ void MCAsmStreamer::switchSection(MCSection *Section, uint32_t Subsection) {
         TC32LastSectionExtra = Extra;
         if (IsShorthand) {
           TC32SectionSeen = false;
+        } else if (SecName.starts_with(".text")) {
+          // .text.* section switches (e.g. .text.unlikely., .text.__aeabi_*)
+          // get commented out in TC32 assembly, so the TC32 per-function
+          // section injection must still fire for these.
+          TC32SectionSeen = false;
         } else {
           TC32SectionSeen = true;
         }
