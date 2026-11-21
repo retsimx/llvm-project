@@ -331,6 +331,7 @@ struct Config {
   bool armCMSESupport = false;
   bool asNeeded = false;
   bool armBe8 = false;
+  bool tc32 = false;
   BsymbolicKind bsymbolic = BsymbolicKind::None;
   CGProfileSortKind callGraphProfileSort;
   llvm::StringRef irpgoProfilePath;

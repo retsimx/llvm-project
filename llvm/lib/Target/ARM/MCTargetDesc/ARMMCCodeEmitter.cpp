@@ -1960,12 +1960,26 @@ void ARMMCCodeEmitter::encodeInstruction(const MCInst &MI,
       IsLittleEndian ? llvm::endianness::little : llvm::endianness::big;
   uint32_t Binary = getBinaryCodeForInstr(MI, Fixups, STI);
   if (Size == 2) {
-    support::endian::write<uint16_t>(CB, Binary, Endian);
+    uint16_t HalfWord = static_cast<uint16_t>(Binary);
+    if (STI.hasFeature(ARM::FeatureTC32))
+      HalfWord = ARM::scrambleTC32HalfWord(HalfWord);
+    support::endian::write<uint16_t>(CB, HalfWord, Endian);
   } else if (isThumb(STI)) {
     // Thumb 32-bit wide instructions need to emit the high order halfword
     // first.
-    support::endian::write<uint16_t>(CB, Binary >> 16, Endian);
-    support::endian::write<uint16_t>(CB, Binary & 0xffff, Endian);
+    if (STI.hasFeature(ARM::FeatureTC32)) {
+      // The unrelocated Thumb bl template is encoded in TC32 form with J1 and
+      // J2 set, i.e. a low halfword of 0x9800.
+      if (MI.getOpcode() == ARM::tBL)
+        Binary |= (1u << 13) | (1u << 11);
+      uint16_t Hi = static_cast<uint16_t>(Binary >> 16);
+      uint16_t Lo = static_cast<uint16_t>(Binary & 0xffff);
+      support::endian::write<uint16_t>(CB, ARM::scrambleTC32HalfWord(Hi), Endian);
+      support::endian::write<uint16_t>(CB, ARM::scrambleTC32HalfWord(Lo), Endian);
+    } else {
+      support::endian::write<uint16_t>(CB, Binary >> 16, Endian);
+      support::endian::write<uint16_t>(CB, Binary & 0xffff, Endian);
+    }
   } else {
     support::endian::write<uint32_t>(CB, Binary, Endian);
   }

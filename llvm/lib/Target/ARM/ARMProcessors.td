@@ -124,7 +124,7 @@ def : ProcNoItin<"arm7tdmi",                            [ARMv4t]>;
 def : ProcNoItin<"arm7tdmi-s",                          [ARMv4t]>;
 def : ProcNoItin<"arm710t",                             [ARMv4t]>;
 def : ProcNoItin<"arm720t",                             [ARMv4t]>;
-def : ProcNoItin<"arm9",                                [ARMv4t]>;
+def : ProcNoItin<"arm9",                                [ARMv4t, FeatureTC32]>;
 def : ProcNoItin<"arm9tdmi",                            [ARMv4t]>;
 def : ProcNoItin<"arm920",                              [ARMv4t]>;
 def : ProcNoItin<"arm920t",                             [ARMv4t]>;

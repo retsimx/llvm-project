@@ -1391,6 +1391,7 @@ static void readConfigs(Ctx &ctx, opt::InputArgList &args) {
   ctx.arg.memtagMode = getMemtagMode(ctx, args);
   ctx.arg.auxiliaryList = args::getStrings(args, OPT_auxiliary);
   ctx.arg.armBe8 = args.hasArg(OPT_be8);
+  ctx.arg.tc32 = args.hasArg(OPT_tc32);
   if (opt::Arg *arg = args.getLastArg(
           OPT_Bno_symbolic, OPT_Bsymbolic_non_weak_functions,
           OPT_Bsymbolic_functions, OPT_Bsymbolic_non_weak, OPT_Bsymbolic)) {

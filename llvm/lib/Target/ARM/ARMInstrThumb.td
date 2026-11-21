@@ -901,6 +901,104 @@ def tPUSH : T1I<(outs), (ins pred:$p, reglist:$regs, variable_ops),
 }
 
 //===----------------------------------------------------------------------===//
+//  TC32 (TLSR8266) supervisor / interrupt-control instructions.
+//
+//  These five 16-bit instructions occupy Thumb-1's unallocated
+//  0xB800-0xBBDF space. They are described here in *unscrambled* (plain
+//  ARM Thumb-1) encoding space; the TC32 binary emitter applies the
+//  bits[15:12] halfword permutation when it encodes them.
+//
+//    mcsr Rd     = 0xBBC0 | Rd
+//    mrcs Rd     = 0xBBC8 | Rd
+//    mssr Rd     = 0xBBD0 | Rd
+//    mrss Rd     = 0xBBD8 | Rd
+//    reti {list} = 0xB800 | (list & 0xFF) | (pc in list << 8)
+//
+//  mcsr/mssr write a supervisor register from Rd, mrcs/mrss read one into
+//  Rd, and reti returns from an interrupt restoring $regs.
+//
+//  These encodings overlap ARMv8-M's CBZ/CBNZ (0xB9xx, 0xBBxx), which is why
+//  they are decoded from the "Thumb2" 16-bit table: ARMDisassembler tries
+//  DecoderTableThumb16, then DecoderTableThumbSBit16, then
+//  DecoderTableThumb216. On a target without HasV8MBaseline the CBZ/CBNZ
+//  predicate check fails there, so these decode; on a v8-M baseline target
+//  CBZ/CBNZ win, as they must.
+//===----------------------------------------------------------------------===//
+
+let DecoderNamespace = "Thumb2" in {
+
+  let hasSideEffects = 1 in
+  def tMCSR : T1I<(outs), (ins pred:$p, tGPR:$Rd),
+                  IIC_iALUi,
+                  "mcsr${p}\t$Rd", []>,
+              T1Misc<0b1011110>, Sched<[WriteALU]> {
+    bits<0> p;
+    bits<3> Rd;
+    let Inst{4-3} = 0b00;
+    let Inst{2-0} = Rd;
+  }
+
+  def tMRCS : T1I<(outs tGPR:$Rd), (ins pred:$p),
+                  IIC_iALUi,
+                  "mrcs${p}\t$Rd", []>,
+              T1Misc<0b1011110>, Sched<[WriteALU]> {
+    bits<0> p;
+    bits<3> Rd;
+    let Inst{4-3} = 0b01;
+    let Inst{2-0} = Rd;
+  }
+
+  let hasSideEffects = 1 in
+  def tMSSR : T1I<(outs), (ins pred:$p, tGPR:$Rd),
+                  IIC_iALUi,
+                  "mssr${p}\t$Rd", []>,
+              T1Misc<0b1011110>, Sched<[WriteALU]> {
+    bits<0> p;
+    bits<3> Rd;
+    let Inst{4-3} = 0b10;
+    let Inst{2-0} = Rd;
+  }
+
+  def tMRSS : T1I<(outs tGPR:$Rd), (ins pred:$p),
+                  IIC_iALUi,
+                  "mrss${p}\t$Rd", []>,
+              T1Misc<0b1011110>, Sched<[WriteALU]> {
+    bits<0> p;
+    bits<3> Rd;
+    let Inst{4-3} = 0b11;
+    let Inst{2-0} = Rd;
+  }
+
+  // Interrupt return. The terminator flags also keep this def-less
+  // instruction alive: MachineInstr::isSafeToMove() refuses to move
+  // terminators, so it is never considered trivially dead.
+  let isReturn = 1, isTerminator = 1, isBarrier = 1,
+      isNotDuplicable = 1 in
+  def tRETI : T1I<(outs), (ins pred:$p, reglist:$regs, variable_ops),
+                  IIC_iPop,
+                  "reti${p}\t$regs", []>,
+              T1Misc<{1,0,0,?,?,?,?}>, Sched<[WriteLd]> {
+    bits<0> p;
+    bits<16> regs;
+    let Inst{8}   = regs{15};
+    let Inst{7-0} = regs{7-0};
+  }
+
+} // DecoderNamespace = "Thumb2"
+
+// Telink's assembler also spells these with a leading 't'. Accept both.
+def : InstAlias<"tmcsr${p} $Rd", (tMCSR pred:$p, tGPR:$Rd), 0>,
+      Requires<[IsThumb, IsThumb1Only]>;
+def : InstAlias<"tmrcs${p} $Rd", (tMRCS tGPR:$Rd, pred:$p), 0>,
+      Requires<[IsThumb, IsThumb1Only]>;
+def : InstAlias<"tmssr${p} $Rd", (tMSSR pred:$p, tGPR:$Rd), 0>,
+      Requires<[IsThumb, IsThumb1Only]>;
+def : InstAlias<"tmrss${p} $Rd", (tMRSS tGPR:$Rd, pred:$p), 0>,
+      Requires<[IsThumb, IsThumb1Only]>;
+def : InstAlias<"treti${p} $regs", (tRETI pred:$p, reglist:$regs), 0>,
+      Requires<[IsThumb, IsThumb1Only]>;
+
+//===----------------------------------------------------------------------===//
 //  Arithmetic Instructions.
 //
 
@@ -1309,8 +1407,8 @@ def tROR :                      // A8.6.139
 def tRSB :                      // A8.6.141
   T1sIDPEncode<0b1001, (outs tGPR:$Rd), (ins tGPR:$Rn),
                IIC_iALUi,
-               "tneg", "\t$Rd, $Rn",
-               [(set tGPR:$Rd, (ineg tGPR:$Rn))]>, Requires<[IsThumb, IsThumb1Only, HasV6]>, Sched<[WriteALU]>;
+               "rsb", "\t$Rd, $Rn, #0",
+               [(set tGPR:$Rd, (ineg tGPR:$Rn))]>, Sched<[WriteALU]>;
 
 // Subtract with carry register
 let Uses = [CPSR], hasSideEffects = 0 in
@@ -1393,11 +1491,11 @@ let hasPostISelHook = 1, Defs = [CPSR] in {
                 Requires<[IsThumb1Only]>,
                 Sched<[WriteALU]>;
 
-//  def tRSBS   : tPseudoInst<(outs tGPR:$Rd), (ins tGPR:$Rn),
-//                            2, IIC_iALUr,
-//                            [(set tGPR:$Rd, CPSR, (ARMsubc 0, tGPR:$Rn))]>,
-//                Requires<[IsThumb1Only]>,
-//                Sched<[WriteALU]>;
+  def tRSBS   : tPseudoInst<(outs tGPR:$Rd), (ins tGPR:$Rn),
+                            2, IIC_iALUr,
+                            [(set tGPR:$Rd, CPSR, (ARMsubc 0, tGPR:$Rn))]>,
+                Requires<[IsThumb1Only]>,
+                Sched<[WriteALU]>;
 
   def tLSLSri : tPseudoInst<(outs tGPR:$Rd), (ins tGPR:$Rn, imm0_31:$imm5),
                             2, IIC_iALUr,
@@ -1430,7 +1528,6 @@ def tTST :                      // A8.6.230
   T1pIDPEncode<0b1000, (outs), (ins tGPR:$Rn, tGPR:$Rm), IIC_iTSTr,
                "tst", "\t$Rn, $Rm",
                [(set CPSR, (ARMcmpZ (and_su tGPR:$Rn, tGPR:$Rm), 0))]>,
-               Requires<[IsThumb, IsThumb1Only, HasV6]>,
                Sched<[WriteALU]>;
 
 // A8.8.247  UDF - Undefined (Encoding T1)
@@ -1484,7 +1581,7 @@ def : Pat<(ARMcmov tGPR:$false, tGPR:$true, imm:$cc, CPSR),
 
 def tADR : T1I<(outs tGPR:$Rd), (ins t_adrlabel:$addr, pred:$p),
                IIC_iALUi, "adr{$p}\t$Rd, $addr", []>,
-               T1Encoding<{1,0,1,0,0,?}>, Requires<[IsThumb, IsThumb1Only, HasV6]>, Sched<[WriteALU]> {
+               T1Encoding<{1,0,1,0,0,?}>, Sched<[WriteALU]> {
   bits<3> Rd;
   bits<8> addr;
   let Inst{10-8} = Rd;

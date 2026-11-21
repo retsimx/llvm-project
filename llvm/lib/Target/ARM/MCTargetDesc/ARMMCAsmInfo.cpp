@@ -79,9 +79,6 @@ ARMELFMCAsmInfo::ARMELFMCAsmInfo(const Triple &TheTriple,
       (TheTriple.getArch() == Triple::thumbeb))
     IsLittleEndian = false;
 
-  if (TheTriple.isThumb())
-    GlobalDirective = "\t.global\t";
-
   // ".comm align is in bytes but .align is pow-2."
   AlignmentIsInBytes = false;
 

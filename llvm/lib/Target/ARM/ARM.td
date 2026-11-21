@@ -19,6 +19,16 @@ include "ARMFeatures.td"
 include "ARMArchitectures.td"
 
 //===----------------------------------------------------------------------===//
+// Telink TC32
+//===----------------------------------------------------------------------===//
+
+// The TC32 core is an ARMv4T Thumb-1 core that permutes bits[15:12] of every
+// 16-bit instruction halfword. Enabling this feature makes the MC layer
+// scramble emitted halfwords and unscramble disassembled ones.
+def FeatureTC32 : SubtargetFeature<"tc32", "IsTC32", "true",
+  "Telink TC32 Thumb-1 variant (top-nibble-permuted instruction encoding)">;
+
+//===----------------------------------------------------------------------===//
 // Register File Description
 //===----------------------------------------------------------------------===//
 

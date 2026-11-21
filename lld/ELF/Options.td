@@ -492,6 +492,8 @@ defm target2:
   Eq<"target2", "Interpret R_ARM_TARGET2 as <type>, where <type> is one of rel, abs, or got-rel">,
   MetaVarName<"<type>">;
 
+def tc32: F<"tc32">, HelpText<"Emit Telink TC32 top-nibble-permuted Thumb instructions">;
+
 defm threads
     : EEq<"threads",
          "Number of threads. '1' disables multi-threading. By default all "

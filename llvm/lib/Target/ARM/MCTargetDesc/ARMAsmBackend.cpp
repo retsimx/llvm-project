@@ -356,8 +356,11 @@ bool ARMAsmBackend::writeNopData(raw_ostream &OS, uint64_t Count,
   const uint32_t ARMv4_NopEncoding = 0xe1a00000;   // using MOV r0,r0
   const uint32_t ARMv6T2_NopEncoding = 0xe320f000; // NOP
   if (STI->hasFeature(ARM::ModeThumb)) {
-    const uint16_t nopEncoding =
+    uint16_t nopEncoding =
         hasNOP(STI) ? Thumb2_16bitNopEncoding : Thumb1_16bitNopEncoding;
+    // Code padding goes straight to the stream, bypassing encodeInstruction.
+    if (STI->hasFeature(ARM::FeatureTC32))
+      nopEncoding = ARM::scrambleTC32HalfWord(nopEncoding);
     uint64_t NumNops = Count / 2;
     for (uint64_t i = 0; i != NumNops; ++i)
       support::endian::write(OS, nopEncoding, Endian);
@@ -680,6 +683,12 @@ unsigned ARMAsmBackend::adjustFixupValue(const MCAssembler &Asm,
     uint32_t FirstHalf = (((uint16_t)signBit << 10) | (uint16_t)imm10Bits);
     uint32_t SecondHalf = (((uint16_t)J1Bit << 13) | ((uint16_t)J2Bit << 11) |
                            (uint16_t)imm11Bits);
+    if (STI && STI->hasFeature(ARM::FeatureTC32)) {
+      // In TC32 form the opcode nibbles (0x9000/0x9800) are already present in
+      // the emitted bytes, so only the immediate fields may be applied.
+      FirstHalf &= 0x7ff;
+      SecondHalf &= 0x7ff;
+    }
     return joinHalfWords(FirstHalf, SecondHalf,
                          Endian == llvm::endianness::little);
   }

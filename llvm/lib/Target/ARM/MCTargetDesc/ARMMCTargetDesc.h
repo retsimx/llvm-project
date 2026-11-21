@@ -37,6 +37,24 @@ class StringRef;
 class Target;
 class Triple;
 
+namespace ARM {
+/// The Telink TC32 core is Thumb-1 with bits[15:12] of every 16-bit
+/// instruction halfword permuted by a fixed 16-entry table. The table is *not*
+/// an involution: `unscrambleTC32HalfWord` carries the separately written
+/// inverse permutation and must be used to decode.
+inline uint16_t scrambleTC32HalfWord(uint16_t HW) {
+  static const uint8_t Map[16] = {0xF, 0xE, 0xA, 0xB, 0x0, 0x1, 0x5, 0x4,
+                                  0x2, 0x3, 0x7, 0x6, 0xD, 0xC, 0x8, 0x9};
+  return (HW & 0x0FFF) | (uint16_t(Map[(HW >> 12) & 0xF]) << 12);
+}
+
+inline uint16_t unscrambleTC32HalfWord(uint16_t HW) {
+  static const uint8_t Map[16] = {0x4, 0x5, 0x8, 0x9, 0x7, 0x6, 0xB, 0xA,
+                                  0xE, 0xF, 0x2, 0x3, 0xD, 0xC, 0x1, 0x0};
+  return (HW & 0x0FFF) | (uint16_t(Map[(HW >> 12) & 0xF]) << 12);
+}
+} // namespace ARM
+
 namespace ARM_MC {
 std::string ParseARMTriple(const Triple &TT, StringRef CPU);
 void initLLVMToCVRegMapping(MCRegisterInfo *MRI);

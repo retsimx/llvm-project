@@ -6160,6 +6160,8 @@ uint64_t ARMDisassembler::suggestBytesToSkip(ArrayRef<uint8_t> Bytes,
 
   uint16_t Insn16 = llvm::support::endian::read<uint16_t>(
       Bytes.data(), InstructionEndianness);
+  if (STI.hasFeature(ARM::FeatureTC32))
+    Insn16 = ARM::unscrambleTC32HalfWord(Insn16);
   return Insn16 < 0xE800 ? 2 : 4;
 }
 
@@ -6365,6 +6367,8 @@ DecodeStatus ARMDisassembler::getThumbInstruction(MCInst &MI, uint64_t &Size,
 
   uint16_t Insn16 = llvm::support::endian::read<uint16_t>(
       Bytes.data(), InstructionEndianness);
+  if (STI.hasFeature(ARM::FeatureTC32))
+    Insn16 = ARM::unscrambleTC32HalfWord(Insn16);
   DecodeStatus Result =
       decodeInstruction(DecoderTableThumb16, MI, Insn16, Address, this, STI);
   if (Result != MCDisassembler::Fail) {
@@ -6415,9 +6419,11 @@ DecodeStatus ARMDisassembler::getThumbInstruction(MCInst &MI, uint64_t &Size,
     return MCDisassembler::Fail;
   }
 
-  uint32_t Insn32 =
-      (uint32_t(Insn16) << 16) | llvm::support::endian::read<uint16_t>(
-                                     Bytes.data() + 2, InstructionEndianness);
+  uint16_t Insn16Lo = llvm::support::endian::read<uint16_t>(
+      Bytes.data() + 2, InstructionEndianness);
+  if (STI.hasFeature(ARM::FeatureTC32))
+    Insn16Lo = ARM::unscrambleTC32HalfWord(Insn16Lo);
+  uint32_t Insn32 = (uint32_t(Insn16) << 16) | Insn16Lo;
 
   Result =
       decodeInstruction(DecoderTableMVE32, MI, Insn32, Address, this, STI);

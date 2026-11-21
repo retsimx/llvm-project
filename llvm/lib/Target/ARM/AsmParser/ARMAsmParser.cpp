@@ -6612,7 +6612,11 @@ StringRef ARMAsmParser::splitMnemonic(StringRef Mnemonic, StringRef ExtraToken,
       Mnemonic == "csinc" || Mnemonic == "csinv" || Mnemonic == "csneg" ||
       Mnemonic == "cinc" || Mnemonic == "cinv" || Mnemonic == "cneg" ||
       Mnemonic == "cset" || Mnemonic == "csetm" || Mnemonic == "aut" ||
-      Mnemonic == "pac" || Mnemonic == "pacbti" || Mnemonic == "bti")
+      Mnemonic == "pac" || Mnemonic == "pacbti" || Mnemonic == "bti" ||
+      Mnemonic == "mcsr" || Mnemonic == "mrcs" || Mnemonic == "mssr" ||
+      Mnemonic == "mrss" || Mnemonic == "reti" || Mnemonic == "tmcsr" ||
+      Mnemonic == "tmrcs" || Mnemonic == "tmssr" || Mnemonic == "tmrss" ||
+      Mnemonic == "treti")
     return Mnemonic;
 
   // First, split out any predication code. Ignore mnemonics we know aren't
@@ -6753,7 +6757,10 @@ void ARMAsmParser::getMnemonicAcceptInfo(StringRef Mnemonic,
        !MS.isITPredicableCDEInstr(Mnemonic)) ||
       Mnemonic.starts_with("vpt") || Mnemonic.starts_with("vpst") ||
       Mnemonic == "pac" || Mnemonic == "pacbti" || Mnemonic == "aut" ||
-      Mnemonic == "bti" ||
+      Mnemonic == "bti" || Mnemonic == "mcsr" || Mnemonic == "mrcs" ||
+      Mnemonic == "mssr" || Mnemonic == "mrss" || Mnemonic == "reti" ||
+      Mnemonic == "tmcsr" || Mnemonic == "tmrcs" || Mnemonic == "tmssr" ||
+      Mnemonic == "tmrss" || Mnemonic == "treti" ||
       (hasMVE() &&
        (Mnemonic.starts_with("vst2") || Mnemonic.starts_with("vld2") ||
         Mnemonic.starts_with("vst4") || Mnemonic.starts_with("vld4") ||

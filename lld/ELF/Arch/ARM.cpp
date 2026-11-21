@@ -527,6 +527,9 @@ bool ARM::needsThunk(RelExpr expr, RelType type, const InputFile *file,
   }
   case R_ARM_THM_JUMP19:
   case R_ARM_THM_JUMP24:
+    // TC32 has no ARM/Thumb interworking and no compatible thunks.
+    if (ctx.arg.tc32)
+      return false;
     // Source is Thumb, when all PLT entries are ARM interworking is required.
     // Otherwise we need to interwork if STT_FUNC Symbol has bit 0 clear (ARM).
     if ((expr == R_PLT_PC && !useThumbPLTs(ctx)) ||
@@ -534,6 +537,9 @@ bool ARM::needsThunk(RelExpr expr, RelType type, const InputFile *file,
       return true;
     [[fallthrough]];
   case R_ARM_THM_CALL: {
+    // TC32 has no ARM/Thumb interworking and no compatible thunks.
+    if (ctx.arg.tc32)
+      return false;
     uint64_t dst = (expr == R_PLT_PC) ? s.getPltVA(ctx) : s.getVA(ctx);
     return !inBranchRange(type, branchAddr, dst + a) ||
            (!ctx.arg.armHasBlx && (s.getVA(ctx) & 1) == 0);
@@ -797,6 +803,14 @@ void ARM::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
                 ((val >> 1) & 0x07ff)); // imm11
     break;
   case R_ARM_THM_CALL: {
+    if (ctx.arg.tc32) {
+      // Encode bl directly in TC32 form: the opcode nibbles are already
+      // permuted (0x9000/0x9800) and J1/J2 are not used.
+      checkInt(ctx, loc, val, 23, rel);
+      write16(ctx, loc, 0x9000 | ((val >> 12) & 0x07ff));
+      write16(ctx, loc + 2, 0x9800 | ((val >> 1) & 0x07ff));
+      break;
+    }
     // R_ARM_THM_CALL is used for BL and BLX instructions, for symbols of type
     // STT_FUNC we choose whether to write a BL or BLX depending on the
     // value of bit 0 of Val. With bit 0 == 0 denoting ARM, if the symbol is
