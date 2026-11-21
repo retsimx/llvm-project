@@ -5,12 +5,13 @@
 // external fix_ir.py script.
 //
 // Transformations:
+//   - "frame-pointer"="non-leaf" -> "none" (no unwinder in the firmware)
 //   - llvm.arm.ldrex -> plain load
-//   - llvm.arm.strex -> store + load (always succeeds)
+//   - llvm.arm.strex -> store (always succeeds, returns 0)
 //   - llvm.arm.hint  -> erased
 //   - inline asm "sev" -> erased
-//   - inline asm "mrs ..." -> replaced with "add sp, ..."
-//   - inline asm "msr ..." -> replaced with "add sp, ..."
+//   - inline asm "mrs ..." -> "mov <out>, #0" (or erased if no output reg)
+//   - inline asm "msr ..." -> erased
 //
 //===----------------------------------------------------------------------===//
 
@@ -41,6 +42,17 @@ public:
       return false;
 
     bool Changed = false;
+
+    // The firmware is built with panic=abort and .cantunwind, with no
+    // unwinder, so a frame pointer is pure overhead. rustc asks for
+    // "non-leaf" per function; drop it so r7 stays allocatable and the
+    // prologue does not need "add r7, sp, #0".
+    Attribute FP = F.getFnAttribute("frame-pointer");
+    if (FP.isStringAttribute() && FP.getValueAsString() == "non-leaf") {
+      F.addFnAttr("frame-pointer", "none");
+      Changed = true;
+    }
+
     SmallVector<Instruction *, 16> ToErase;
 
     for (auto &BB : F) {
@@ -78,17 +90,15 @@ private:
       return true;
     }
     case Intrinsic::arm_strex: {
-      // strex(value, ptr) -> store(value, ptr); load(ptr)
-      // strex returns 0 on success; we simulate always-success by returning
-      // a load of the stored value (which fix_ir.py also does)
+      // strex(value, ptr) -> store(value, ptr); return 0.
+      // The single-core TC32 store always succeeds; ARM strex returns 0 on
+      // success, not the stored value.
       IRBuilder<> Builder(II);
       Value *Val = II->getArgOperand(0);
       Value *Ptr = II->getArgOperand(1);
       StoreInst *Store = Builder.CreateStore(Val, Ptr);
       Store->setAlignment(Align(4));
-      LoadInst *Load = Builder.CreateLoad(II->getType(), Ptr);
-      Load->setAlignment(Align(4));
-      II->replaceAllUsesWith(Load);
+      II->replaceAllUsesWith(ConstantInt::get(II->getType(), 0));
       ToErase.push_back(II);
       return true;
     }
@@ -116,16 +126,32 @@ private:
     }
 
     if (AsmStr.starts_with("mrs ") || AsmStr.starts_with("msr ")) {
-      // mrs/msr -> add sp, $0 (harmless no-op equivalent)
-      std::string NewAsmStr;
-      if (AsmStr.starts_with("mrs "))
-        NewAsmStr = "add sp, ${0}";
-      else
-        NewAsmStr = "add sp, ${0}";
+      // TC32 has no status-register access instructions.
+      // A "mrs" read becomes "mov ${0}, #0" when the first constraint is an
+      // output register; otherwise the call is dropped. An "msr" write has no
+      // TC32 equivalent and is a no-op on this core, so it is dropped.
+      // Nothing here may modify sp.
+      if (AsmStr.starts_with("msr ")) {
+        if (!CI->getType()->isVoidTy())
+          CI->replaceAllUsesWith(UndefValue::get(CI->getType()));
+        ToErase.push_back(CI);
+        return true;
+      }
 
-      InlineAsm *NewIA = InlineAsm::get(
-          IA->getFunctionType(), NewAsmStr, IA->getConstraintString(),
-          IA->hasSideEffects(), IA->isAlignStack(), IA->getDialect());
+      StringRef Constraints = IA->getConstraintString();
+      bool FirstIsOutput =
+          !Constraints.empty() &&
+          (Constraints.front() == '=' || Constraints.front() == '+');
+      if (!FirstIsOutput) {
+        if (!CI->getType()->isVoidTy())
+          CI->replaceAllUsesWith(UndefValue::get(CI->getType()));
+        ToErase.push_back(CI);
+        return true;
+      }
+
+      InlineAsm *NewIA = InlineAsm::get(IA->getFunctionType(), "mov ${0}, #0",
+                                        Constraints, IA->hasSideEffects(),
+                                        IA->isAlignStack(), IA->getDialect());
 
       CI->setCalledOperand(NewIA);
       return true;

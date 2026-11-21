@@ -105,6 +105,7 @@ class VectorType;
     const ARMBaseTargetMachine &getTM() const;
 
     unsigned getJumpTableEncoding() const override;
+    bool areJTsAllowed(const Function *Fn) const override;
     bool useSoftFloat() const override;
 
     SDValue LowerOperation(SDValue Op, SelectionDAG &DAG) const override;

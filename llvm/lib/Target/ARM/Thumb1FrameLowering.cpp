@@ -612,12 +612,15 @@ bool Thumb1FrameLowering::emitPopSpecialFixUp(MachineBasicBlock &MBB,
   // If MBBI is a return instruction, or is a tPOP followed by a return
   // instruction in the successor BB, we may be able to directly restore
   // LR in the PC.
-  // This is only possible with v5T ops (v4T can't change the Thumb bit via
-  // a POP PC instruction), and only if we do not need to emit any SP update.
+  // TC32 pops the PC directly: there is no 32-bit ARM state to interwork to,
+  // so it does not require v5T ops. Classical ARMv4T still needs the BX
+  // trampoline, hence the feature test rather than an unconditional relaxation.
+  // In both cases no SP update may be required.
   // Otherwise, we need a temporary register to pop the value
   // and copy that value into LR.
   auto MBBI = MBB.getFirstTerminator();
-  bool CanRestoreDirectly = STI.hasV5TOps() && !ArgRegsSaveSize;
+  bool CanRestoreDirectly =
+      (STI.hasV5TOps() || STI.hasFeature(ARM::FeatureTC32)) && !ArgRegsSaveSize;
   if (CanRestoreDirectly) {
     if (MBBI != MBB.end() && MBBI->getOpcode() != ARM::tB)
       CanRestoreDirectly = (MBBI->getOpcode() == ARM::tBX_RET ||
@@ -1030,7 +1033,7 @@ static void popRegsFromStack(MachineBasicBlock &MBB,
         // Special epilogue for vararg functions. See emitEpilogue
         if (IsVarArg)
           continue;
-        // ARMv4T requires BX, see emitEpilogue
+        // Classical ARMv4T requires BX, see emitEpilogue.
         if (!HasV5Ops)
           continue;
 
@@ -1199,7 +1202,7 @@ bool Thumb1FrameLowering::restoreCalleeSavedRegisters(
 
   // First pop regular spilled regs.
   popRegsFromStack(MBB, MI, TII, SpilledGPRs, CopyRegs, IsVarArg,
-                   STI.hasV5TOps());
+                   STI.hasV5TOps() || STI.hasFeature(ARM::FeatureTC32));
 
   // LR may only be popped into pc, as part of a return sequence.
   // Check that no other pop instructions are inserted after that.
@@ -1209,7 +1212,7 @@ bool Thumb1FrameLowering::restoreCalleeSavedRegisters(
   // Now pop Frame Record regs.
   // Only unused return registers can be used as copy regs at this point.
   popRegsFromStack(MBB, MI, TII, FrameRecord, UnusedReturnRegs, IsVarArg,
-                   STI.hasV5TOps());
+                   STI.hasV5TOps() || STI.hasFeature(ARM::FeatureTC32));
 
   return true;
 }

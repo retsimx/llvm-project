@@ -1122,8 +1122,9 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM_,
     if (Subtarget->hasDataBarrier())
       InsertFencesForAtomic = true;
 
-    setOperationAction(ISD::ATOMIC_FENCE,   MVT::Other,
-                       Subtarget->hasAnyDataBarrier() ? Custom : Expand);
+    // Always custom-lower ATOMIC_FENCE so targets without a data barrier can
+    // be handled as a zero-instruction compiler barrier in LowerATOMIC_FENCE.
+    setOperationAction(ISD::ATOMIC_FENCE, MVT::Other, Custom);
 
     // Set them all for libcall, which will force libcalls.
     setOperationAction(ISD::ATOMIC_CMP_SWAP, MVT::i32, LibCall);
@@ -1168,6 +1169,14 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM_,
     // routines.
     setMaxAtomicSizeInBitsSupported(0);
   }
+
+  // TC32 has no exclusive/atomic instructions, but aligned 32-bit loads and
+  // stores are indivisible on this single-core part, and interrupt handlers run
+  // on the same core. Declaring 32-bit atomics supported keeps AtomicExpandPass
+  // from turning acquire/release accesses into __atomic_* libcalls; the custom
+  // lowering below then emits plain accesses with a compiler barrier.
+  if (Subtarget->isTC32())
+    setMaxAtomicSizeInBitsSupported(32);
 
   setMaxDivRemBitWidthSupported(64);
 
@@ -1446,6 +1455,15 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM_,
 
 bool ARMTargetLowering::useSoftFloat() const {
   return Subtarget->useSoftFloat();
+}
+
+bool ARMTargetLowering::areJTsAllowed(const Function *Fn) const {
+  // Thumb-1 jump tables are unverified on TC32 silicon; keep switches as
+  // compare chains (the firmware relied on this before the MC-layer switch).
+  // Scoped to Thumb-1 so other ARM subtargets keep their tables.
+  if (Subtarget->isThumb1Only())
+    return false;
+  return TargetLowering::areJTsAllowed(Fn);
 }
 
 bool ARMTargetLowering::preferSelectsOverBooleanArithmetic(EVT VT) const {
@@ -3987,10 +4005,15 @@ static SDValue LowerATOMIC_FENCE(SDValue Op, SelectionDAG &DAG,
   if (SSID == SyncScope::SingleThread)
     return Op;
 
+  if (!Subtarget->hasAnyDataBarrier())
+    // No dmb/dsb (and no ARMv6 mcr fallback): a single-core core needs no
+    // hardware barrier, so emit a compiler barrier instead of a
+    // __sync_synchronize libcall.
+    return DAG.getNode(ISD::MEMBARRIER, dl, MVT::Other, Op.getOperand(0));
+
   if (!Subtarget->hasDataBarrier()) {
     // Some ARMv6 cpus can support data barriers with an mcr instruction.
-    // Thumb1 and pre-v6 ARM mode use a libcall instead and should never get
-    // here.
+    // We only get here for cores that have a barrier but no dmb.
     assert(Subtarget->hasV6Ops() && !Subtarget->isThumb() &&
            "Unexpected ISD::ATOMIC_FENCE encountered. Should be libcall!");
     return DAG.getNode(ARMISD::MEMBARRIER_MCR, dl, MVT::Other, Op.getOperand(0),
@@ -10233,13 +10256,17 @@ static SDValue LowerVecReduceMinMax(SDValue Op, SelectionDAG &DAG,
   return Res;
 }
 
-static SDValue LowerAtomicLoadStore(SDValue Op, SelectionDAG &DAG) {
-  if (isStrongerThanMonotonic(cast<AtomicSDNode>(Op)->getSuccessOrdering()))
+static SDValue LowerAtomicLoadStore(SDValue Op, SelectionDAG &DAG,
+                                    const ARMSubtarget *Subtarget) {
+  if (isStrongerThanMonotonic(cast<AtomicSDNode>(Op)->getSuccessOrdering()) &&
+      Subtarget->hasAnyDataBarrier())
     // Acquire/Release load/store is not legal for targets without a dmb or
     // equivalent available.
     return SDValue();
 
-  // Monotonic load/store is legal for all targets.
+  // Monotonic load/store is legal for all targets. On a single-core target
+  // with no data barrier there is nothing to order either, so acquire/release
+  // and seq_cst also lower to plain loads/stores rather than a libcall.
   return Op;
 }
 
@@ -10623,7 +10650,7 @@ SDValue ARMTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
     return LowerVecReduceMinMax(Op, DAG, Subtarget);
   case ISD::ATOMIC_LOAD:
   case ISD::ATOMIC_STORE:
-    return LowerAtomicLoadStore(Op, DAG);
+    return LowerAtomicLoadStore(Op, DAG, Subtarget);
   case ISD::SDIVREM:
   case ISD::UDIVREM:       return LowerDivRem(Op, DAG);
   case ISD::DYNAMIC_STACKALLOC:
